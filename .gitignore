@@ -7,6 +7,9 @@ __pycache__/
 Wan2.2-TI2V-5B/
 Wan2.2-I2V-A14B/
 *.mp4
+outputs/
 
-# Repo oficial é clonado à parte (não versionar aqui)
-Wan2.2/
+# O código do Wan2.2 (com nossos patches de CPU) É versionado.
+# Só ignoramos o que é pesado/gerado dentro dele:
+Wan2.2/.git/
+Wan2.2/**/__pycache__/

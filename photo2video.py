@@ -71,6 +71,7 @@ MODELS: dict[str, ModelSpec] = {
 }
 
 DEFAULT_MODEL = "ti2v-5B"  # o mais leve; melhor default sem GPU enorme
+FPS_DEFAULT = MODELS[DEFAULT_MODEL].fps  # usado pela interface web
 
 # Faixa de duração aceita (segundos) e o ponto "confortável" dos modelos.
 MIN_DURATION = 3.0
@@ -127,6 +128,41 @@ def download_checkpoint(spec: ModelSpec, ckpt_dir: Path) -> bool:
     log(f"Baixando {spec.hf_repo} -> {ckpt_dir} (são vários GB, pode demorar)...")
     cmd = [cli, "download", spec.hf_repo, "--local-dir", str(ckpt_dir)]
     return subprocess.run(cmd).returncode == 0
+
+
+def generation_command(*, image, prompt, size, frame_num, steps, output,
+                       seed=42, guide_scale=None, shift=None,
+                       cuda=None, model=DEFAULT_MODEL):
+    """Monta o comando do generate.py de forma autocontida (usado pelo app web).
+
+    Retorna (cmd, ckpt_dir). Roda como UM único processo (chama generate.py
+    direto), evitando a camada intermediária do main() — mais robusto sob OOM.
+    """
+    if cuda is None:
+        cuda = has_cuda()
+    spec = MODELS[model]
+    ckpt_dir = resolve_ckpt_dir(spec, None)
+    cmd = [
+        sys.executable, str(GENERATE),
+        "--task", spec.task,
+        "--size", size,
+        "--ckpt_dir", str(ckpt_dir),
+        "--image", str(Path(image).resolve()),
+        "--prompt", prompt,
+        "--save_file", str(output),
+        "--frame_num", str(frame_num),
+        "--sample_steps", str(steps),
+        "--base_seed", str(seed),
+        "--convert_model_dtype",
+        "--offload_model", "True" if cuda else "False",
+    ]
+    if spec.t5_cpu:
+        cmd += ["--t5_cpu"]
+    if guide_scale is not None:
+        cmd += ["--sample_guide_scale", str(guide_scale)]
+    if shift is not None:
+        cmd += ["--sample_shift", str(shift)]
+    return cmd, ckpt_dir
 
 
 def build_generate_cmd(args, spec: ModelSpec, ckpt_dir: Path, output: Path,

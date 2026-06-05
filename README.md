@@ -28,12 +28,26 @@ CPU use `--force` (na prática é inviável — levaria horas e o modelo nem ass
 
 ```
 IA_Local/
-├── photo2video.py        # o wrapper CLI (ponto de entrada)
+├── app.py                # Interface web (Gradio): foto + prompt -> vídeo
+├── photo2video.py        # wrapper CLI (usado pela UI e direto no terminal)
 ├── requirements_cpu.txt  # deps para dev/teste em CPU (sem flash_attn)
 ├── README.md             # este arquivo
+├── outputs/              # vídeos gerados pela UI
 ├── venv_wan/             # virtualenv (Python 3.12)
-└── Wan2.2/               # repo oficial clonado (+ patch de CPU em wan/modules/t5.py)
+└── Wan2.2/               # repo oficial clonado (+ patches de CPU)
 ```
+
+## Interface web (recomendada)
+
+```bash
+venv_wan/bin/python app.py     # abre em http://127.0.0.1:7860
+```
+
+Na página: arraste uma **foto**, escreva um **prompt**, escolha um preset
+(Rápido / Equilibrado / Alto-GPU) ou ajuste resolução/passos/duração à mão, e
+clique em **Gerar vídeo**. O rosto/aparência da(s) pessoa(s) é preservado porque
+a foto vira o quadro inicial do vídeo. Cada geração roda como um processo
+separado (libera toda a RAM ao terminar).
 
 ## Setup (já feito nesta máquina de dev)
 
