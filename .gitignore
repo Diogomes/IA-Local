@@ -1,0 +1,12 @@
+# Ambiente
+venv_wan/
+__pycache__/
+*.pyc
+
+# Checkpoints dos modelos (vários GB) e saídas
+Wan2.2-TI2V-5B/
+Wan2.2-I2V-A14B/
+*.mp4
+
+# Repo oficial é clonado à parte (não versionar aqui)
+Wan2.2/
