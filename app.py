@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 import subprocess
 import uuid
+import os
 from pathlib import Path
 
 import gradio as gr
@@ -29,6 +30,8 @@ from photo2video import FPS_DEFAULT, WAN_REPO, generation_command, has_cuda
 ROOT = Path(__file__).resolve().parent
 OUTPUTS = ROOT / "outputs"
 OUTPUTS.mkdir(exist_ok=True)
+ASSETS = ROOT / "assets"
+LOGO_PATH = ASSETS / "gigaverse3d-logo.png"
 
 CUDA = has_cuda()
 
@@ -128,16 +131,176 @@ AVISO_QUALIDADE = (
     "30+ passos**. Na CPU isso é lento (pode levar horas); numa **GPU** sai em minutos.")
 
 
-with gr.Blocks(title="photo2video — Wan2.2") as demo:
-    gr.Markdown(
-        "# 🎞️ photo2video — foto → vídeo (Wan2.2)\n"
-        "Envie uma **foto**, escreva um **prompt** e gere um vídeo curto. "
-        "A aparência da(s) pessoa(s) é preservada porque a foto vira o quadro "
-        f"inicial. **Dispositivo detectado: {'GPU (CUDA) ✅' if CUDA else 'CPU (lento) ⚠️'}**")
-    gr.Markdown(AVISO_QUALIDADE)
+APP_CSS = """
+:root {
+    --gigaverse-panel: rgba(8, 14, 24, 0.84);
+    --gigaverse-line: rgba(61, 161, 255, 0.36);
+    --gigaverse-blue: #1689ff;
+    --gigaverse-cyan: #53d8ff;
+    --gigaverse-silver: #d8dde8;
+    --gigaverse-muted: #8d99ab;
+}
+
+.gradio-container {
+    min-height: 100vh;
+    color: var(--gigaverse-silver) !important;
+    background:
+        radial-gradient(circle at 50% 0%, rgba(22, 137, 255, 0.18), transparent 32rem),
+        linear-gradient(135deg, #03050a 0%, #08111d 45%, #020409 100%) !important;
+}
+
+.gradio-container::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+        linear-gradient(rgba(83, 216, 255, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(83, 216, 255, 0.04) 1px, transparent 1px);
+    background-size: 46px 46px;
+    mask-image: linear-gradient(to bottom, black 0%, transparent 80%);
+}
+
+#gigaverse-shell {
+    max-width: 1240px;
+    margin: 0 auto;
+}
+
+.hero {
+    align-items: center;
+    gap: 28px;
+    padding: 24px 26px;
+    margin: 8px 0 18px;
+    border: 1px solid rgba(83, 216, 255, 0.28);
+    border-radius: 8px;
+    background:
+        linear-gradient(145deg, rgba(10, 18, 31, 0.96), rgba(3, 7, 14, 0.92)),
+        linear-gradient(90deg, rgba(22, 137, 255, 0.12), transparent);
+    box-shadow: 0 0 34px rgba(22, 137, 255, 0.18), inset 0 0 28px rgba(83, 216, 255, 0.06);
+}
+
+.logo-mark img {
+    object-fit: contain !important;
+    filter: drop-shadow(0 0 18px rgba(22, 137, 255, 0.7));
+}
+
+img.logo-mark {
+    width: min(100%, 225px);
+    height: auto;
+    display: block;
+    border-radius: 6px;
+    filter: drop-shadow(0 0 18px rgba(22, 137, 255, 0.7));
+}
+
+.brand-copy h1 {
+    margin: 0;
+    color: #f1f5fb;
+    font-size: clamp(2rem, 4vw, 4.6rem);
+    line-height: 0.95;
+    font-weight: 900;
+    letter-spacing: 0;
+    text-transform: uppercase;
+    text-shadow: 0 0 22px rgba(22, 137, 255, 0.52);
+}
+
+.brand-copy p {
+    margin: 12px 0 0;
+    color: var(--gigaverse-muted);
+    font-size: 1rem;
+}
+
+.brand-copy .tagline {
+    margin-top: 14px;
+    color: var(--gigaverse-cyan);
+    font-size: 0.88rem;
+    font-weight: 700;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+}
+
+.notice {
+    margin-bottom: 18px;
+    border-left: 3px solid var(--gigaverse-blue);
+    padding: 10px 16px;
+    color: #b9c6d8;
+    background: rgba(9, 17, 30, 0.68);
+}
+
+.work-panel {
+    padding: 18px;
+    border: 1px solid var(--gigaverse-line);
+    border-radius: 8px;
+    background: var(--gigaverse-panel);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 18px 42px rgba(0,0,0,0.34);
+}
+
+.work-panel label,
+.work-panel span,
+.work-panel p {
+    color: var(--gigaverse-silver) !important;
+}
+
+textarea,
+input,
+.work-panel .block,
+.work-panel .input-container,
+.work-panel .gradio-dropdown,
+.work-panel .gradio-radio,
+.work-panel .gradio-video,
+.work-panel .gradio-image {
+    border-color: rgba(83, 216, 255, 0.22) !important;
+    background: rgba(2, 6, 12, 0.7) !important;
+}
+
+button.primary,
+.work-panel button.primary {
+    border: 1px solid rgba(83, 216, 255, 0.75) !important;
+    background: linear-gradient(180deg, #1aa2ff 0%, #075bdc 100%) !important;
+    color: white !important;
+    box-shadow: 0 0 22px rgba(22, 137, 255, 0.42);
+    font-weight: 800 !important;
+}
+
+button.primary:hover {
+    filter: brightness(1.12);
+}
+
+.gradio-container footer {
+    display: none !important;
+}
+
+@media (max-width: 760px) {
+    .hero {
+        padding: 18px;
+    }
+
+    .brand-copy h1 {
+        font-size: 2.2rem;
+    }
+}
+"""
+
+
+with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as demo:
+    with gr.Row(elem_classes=["hero"]):
+        with gr.Column(scale=1, min_width=180):
+            gr.HTML(
+                f"<img class='logo-mark' src='/gradio_api/file={LOGO_PATH.as_posix()}' "
+                "alt='Gigaverse3d logo'>"
+            )
+        with gr.Column(scale=4, min_width=320):
+            gr.HTML(
+                "<div class='brand-copy'>"
+                "<h1>Gigaverse3d</h1>"
+                "<div class='tagline'>Impressao 3D • Tecnologia • Universo</div>"
+                "<p>Photo to video com preservacao visual da imagem de entrada. "
+                f"Dispositivo detectado: <strong>{'GPU (CUDA)' if CUDA else 'CPU (lento)'}</strong></p>"
+                "</div>"
+            )
+    gr.Markdown(AVISO_QUALIDADE, elem_classes=["notice"])
 
     with gr.Row():
-        with gr.Column(scale=1):
+        with gr.Column(scale=1, elem_classes=["work-panel"]):
             imagem = gr.Image(type="filepath", label="Foto de entrada", height=300)
             prompt = gr.Textbox(label="Prompt", lines=3,
                                 placeholder=PROMPT_EXEMPLO, value=PROMPT_EXEMPLO)
@@ -157,7 +320,7 @@ with gr.Blocks(title="photo2video — Wan2.2") as demo:
 
             botao = gr.Button("🎬 Gerar vídeo", variant="primary")
 
-        with gr.Column(scale=1):
+        with gr.Column(scale=1, elem_classes=["work-panel"]):
             video = gr.Video(label="Resultado", height=360)
             status = gr.Textbox(label="Status", interactive=False, lines=5)
 
@@ -169,4 +332,12 @@ with gr.Blocks(title="photo2video — Wan2.2") as demo:
 
 
 if __name__ == "__main__":
-    demo.queue().launch(server_name="127.0.0.1", server_port=7860, show_error=True)
+    env_port = os.getenv("GRADIO_SERVER_PORT") or os.getenv("PORT")
+    port = int(env_port) if env_port else 7860
+    demo.queue().launch(
+        server_name=os.getenv("GRADIO_SERVER_NAME", "127.0.0.1"),
+        server_port=port,
+        show_error=True,
+        css=APP_CSS,
+        allowed_paths=[str(ASSETS)],
+    )
