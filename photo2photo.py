@@ -501,6 +501,42 @@ def outpaint_full_body(*, image: str, describe: str = "", model: str = "flux-fil
     return EditResult(path=out, identity_similarity=sim, identity_ok=ok, notes=notes)
 
 
+def generate_variations(*, image: str, instruction: str, model: str = DEFAULT_MODEL,
+                        n: int = 4, reference: str | None = None,
+                        steps: int | None = None, guidance: float | None = None,
+                        seed: int = 42, negative: str | None = None,
+                        device: str | None = None, quantize: str | None = None,
+                        lowvram: bool = False, progress=None, upscale: int = 1,
+                        face_restore: bool = False, identity_check: bool = False,
+                        identity_threshold: float = 0.45) -> list:
+    """Gera N variações (seeds seed, seed+1, …) e devolve uma lista de EditResult
+    ordenada da mais fiel para a menos (pela similaridade de identidade).
+
+    Reaproveita o pipeline em cache entre as variações. Quando identity_check está
+    ligado, cada variação é avaliada uma vez (sem retentativa) e a lista vem
+    ordenada por similaridade decrescente — a melhor escolha fica em primeiro.
+    """
+    n = max(1, int(n))
+    results = []
+    for i in range(n):
+        if progress is not None:
+            try:
+                progress(i / n, desc=f"Variação {i + 1}/{n}")
+            except Exception:
+                pass
+        r = edit_photo(image=image, instruction=instruction, model=model,
+                       reference=reference, steps=steps, guidance=guidance,
+                       seed=int(seed) + i, negative=negative, device=device,
+                       quantize=quantize, lowvram=lowvram, upscale=upscale,
+                       face_restore=face_restore, identity_check=identity_check,
+                       identity_threshold=identity_threshold, max_retries=0)
+        results.append(r)
+    results.sort(key=lambda r: (r.identity_similarity
+                                if r.identity_similarity is not None else -1.0),
+                 reverse=True)
+    return results
+
+
 def studio_transform(*, image: str, model: str = DEFAULT_MODEL,
                      steps: int | None = None, guidance: float | None = None,
                      seed: int = 42, device: str | None = None,
@@ -625,6 +661,8 @@ def main() -> int:
                    help="Limiar de similaridade (default 0.45).")
     p.add_argument("--retries", type=int, default=2,
                    help="Máx. de retentativas com --check-identity (default 2).")
+    p.add_argument("--variations", type=int, default=1,
+                   help="Gera N variações (seeds diferentes) e ordena pela fidelidade.")
     # Corpo inteiro de verdade
     p.add_argument("--outpaint", action="store_true",
                    help="Tarefa 'corpo': usar outpaint com máscara (FLUX Fill).")
@@ -712,6 +750,16 @@ def main() -> int:
             common["model"] = model_fill
             log(f"Outpaint com máscara usando {model_fill}.")
             res = outpaint_full_body(describe=args.describe, **common)
+        elif args.variations > 1:
+            common.pop("output", None)  # cada variação salva com nome próprio
+            variants = generate_variations(
+                instruction=instruction, reference=args.reference,
+                negative=args.negative, n=args.variations, **common)
+            log(f"{len(variants)} variações (melhor primeiro):")
+            for i, v in enumerate(variants):
+                sim = "" if v.identity_similarity is None else f"  id={v.identity_similarity:.3f}"
+                log(f"  {i + 1}. {v.path}{sim}")
+            res = variants[0]
         else:
             res = edit_photo(instruction=instruction, reference=args.reference,
                              negative=args.negative, max_retries=args.retries, **common)
