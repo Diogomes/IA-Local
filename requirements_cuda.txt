@@ -1,0 +1,34 @@
+# Dependências para GERAÇÃO EM GPU NVIDIA (produção).
+#
+# IMPORTANTE — RTX 50 (Blackwell, ex.: RTX 5070 Ti): o PyTorch precisa ser o
+# build CUDA 12.8 (cu128). Os builds cu121/cu124 NÃO têm kernels para a
+# arquitetura sm_120 e falham com "no kernel image available for execution".
+# Instale o torch ANTES deste arquivo, assim:
+#
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+#
+# (O setup_gpu_windows.ps1 já faz isso por você.)
+#
+# flash_attn NÃO está aqui de propósito: é difícil de compilar no Windows e o
+# Wan cai automaticamente no fallback torch.scaled_dot_product_attention (que
+# roda bem em CUDA). Se estiver no Linux/WSL e quiser o máximo de desempenho:
+#   pip install flash-attn --no-build-isolation
+opencv-python>=4.9.0.80
+diffusers>=0.31.0
+transformers>=4.49.0,<=4.51.3
+tokenizers>=0.20.3
+accelerate>=1.1.1
+tqdm
+imageio[ffmpeg]
+easydict
+ftfy
+dashscope
+imageio-ffmpeg
+numpy>=1.23.5,<2
+# Deps usadas pelo pacote wan mas ausentes do requirements.txt oficial:
+einops
+decord
+librosa
+peft
+# Interface web:
+gradio>=4.0

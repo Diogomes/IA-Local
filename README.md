@@ -8,21 +8,23 @@ de hardware, escolha de modelo, download do checkpoint e montagem do comando.
 
 ## ⚠️ Sobre hardware (importante)
 
-Os modelos Wan2.2 são feitos para **GPU NVIDIA com CUDA**. Internamente eles
-fixam o device em `cuda:{id}` (ver `wan/textimage2video.py`, `wan/image2video.py`),
-então **a geração de verdade exige uma máquina com GPU NVIDIA**.
+A **geração em alta qualidade roda numa GPU NVIDIA**. A máquina de desenvolvimento
+aqui só tem GPU Intel integrada (sem CUDA) — nela o `photo2video.py` roda em CPU
+(lento, só para *testar* o pipeline) ou em dry-run. A geração de verdade (540p/720p)
+é feita no **PC com a RTX 5070 Ti 16GB** — veja
+[Deploy no PC com RTX 5070 Ti (Windows)](#deploy-no-pc-com-rtx-5070-ti-windows).
 
-**Esta máquina é de desenvolvimento e só tem GPU Intel integrada (sem CUDA).**
-Aqui o `photo2video.py` roda em **modo validação / dry-run**: ele valida tudo e
-imprime o comando exato a executar na máquina com GPU. Para forçar execução em
-CPU use `--force` (na prática é inviável — levaria horas e o modelo nem assume CPU).
+> 🟢 **RTX 50 (Blackwell) — leia isto:** a 5070 Ti usa a arquitetura **sm_120** e só
+> funciona com **PyTorch CUDA 12.8 (cu128)**. Os builds cu121/cu124 falham com
+> *"no kernel image available for execution on the device"*. O `setup_gpu_windows.ps1`
+> já instala o build certo.
 
 ### Modelos suportados (foto → vídeo)
 
 | Modelo      | Task        | VRAM aprox.                          | Observação                    |
 |-------------|-------------|--------------------------------------|-------------------------------|
-| `ti2v-5B`   | `ti2v-5B`   | ~8–10GB (FP8), 24GB+ rec. (FP16 ~27GB) | **Default** — mais leve, roda em 1 GPU consumer (ex: RTX 4090) |
-| `i2v-A14B`  | `i2v-A14B`  | muito maior (alta VRAM / multi-GPU)  | Mais qualidade, mais pesado   |
+| `ti2v-5B`   | `ti2v-5B`   | ~12–16GB com `--offload_model` (bf16) | **Default** — cabe na RTX 5070 Ti 16GB; 720p OK |
+| `i2v-A14B`  | `i2v-A14B`  | muito maior (alta VRAM / multi-GPU)  | Mais qualidade, **não recomendado em 16GB** (lento/OOM) |
 
 ## Estrutura do projeto
 
@@ -89,9 +91,15 @@ Todos marcados com `PATCH (photo2video)` e mantêm o comportamento original em G
 - `wan/modules/model.py` — todos os `autocast('cuda', …)` usam device dinâmico
   (preserva os blocos forçados a fp32 — rope/norm — também em CPU).
 - `generate.py` — `torch.cuda.synchronize()` final só roda se houver CUDA.
-- `wan/configs/__init__.py` — adicionados tamanhos pequenos (`256*256`, `384*384`,
-  `512*512`) ao `ti2v-5B` **apenas para smoke test em CPU** (o modelo é treinado em
-  720p; baixa resolução serve só para validar o pipeline, a qualidade cai muito).
+- `wan/configs/__init__.py` — adicionados:
+  - tamanhos intermediários `960*544` / `544*960` (≈540p) e habilitado
+    `832*480` / `480*832` (≈480p) para o `ti2v-5B` — **qualidade boa que cabe em
+    GPUs de 12–16GB** (entre o teste de CPU e o 720p cheio).
+  - tamanhos pequenos (`256*256`, `384*384`, `512*512`) **apenas para smoke test
+    em CPU** (o modelo é treinado em 720p; baixa resolução só valida o pipeline).
+- `generate.py` — adicionada a flag `--negative_prompt` (passada como `n_prompt`
+  ao pipeline ti2v/i2v). Vazia = usa o negativo padrão do modelo. Usada pelo
+  wrapper para reforçar a preservação da identidade.
 
 ### Rodando em CPU (lento — só para teste)
 
@@ -129,6 +137,8 @@ python photo2video.py -i foto.jpg -p "a pessoa sorri e acena" -o saida.mp4
 |----------------------|-------------------------------------------------------------|
 | `-i, --image`        | Foto de entrada (obrigatório p/ gerar)                      |
 | `-p, --prompt`       | Descrição do movimento/cena (obrigatório p/ gerar)          |
+| `-n, --negative-prompt` | Termos extras a EVITAR (somados ao negativo padrão)      |
+| `--no-keep-identity` | Desliga o reforço de preservação da pessoa (rosto)          |
 | `-o, --output`       | Arquivo `.mp4` de saída (default: `saida.mp4`)              |
 | `--model`            | `ti2v-5B` (default) ou `i2v-A14B`                           |
 | `--size`             | Área do vídeo, ex: `1280*704` (default depende do modelo)   |
@@ -137,15 +147,72 @@ python photo2video.py -i foto.jpg -p "a pessoa sorri e acena" -o saida.mp4
 | `--download`         | Baixa o checkpoint se faltar, antes de gerar                |
 | `--download-only`    | Só baixa o checkpoint e sai                                 |
 | `--dry-run`          | Valida e imprime o comando, sem executar                    |
-| `--force`            | Tenta executar mesmo sem CUDA (inviável em CPU)             |
 
 Flags não cobertas podem ser repassadas cruas ao `generate.py` após `--`.
 
-## Deploy em GPU (produção)
+## Deploy no PC com RTX 5070 Ti (Windows)
 
-1. Copie este projeto (ou só `photo2video.py` + o repo `Wan2.2/`) para a máquina com GPU NVIDIA.
-2. Crie o venv e instale PyTorch **CUDA** + `requirements_cpu.txt` + `flash-attn`.
-3. Baixe o checkpoint: `python photo2video.py --model ti2v-5B --download-only`.
-4. Gere: `python photo2video.py -i foto.jpg -p "..." -o saida.mp4`.
+Esse é o caminho para gerar vídeos **de verdade**, em alta qualidade.
 
-Referência de tempo: no RTX 4090, o `ti2v-5B` gera ~25 frames a 768×512 em ~4–5 min (FP16, 30 passos).
+### Passo a passo
+
+1. **Pré-requisitos no PC da GPU:**
+   - Driver NVIDIA recente (Game Ready ou Studio) com suporte a CUDA 12.8.
+   - **Python 3.12 (64-bit)** — baixe em
+     <https://www.python.org/downloads/release/python-3120/> e marque
+     *"Add python.exe to PATH"*. (PyTorch ainda não tem wheels para 3.13/3.14.)
+
+2. **Copie o projeto** para o PC da GPU (a pasta `IA_Local/` inteira, incluindo
+   `Wan2.2/` com os patches; **não** precisa copiar o `venv_wan/`).
+
+3. **Rode o setup** (PowerShell, dentro da pasta do projeto):
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\setup_gpu_windows.ps1
+   ```
+   Ele cria o `venv_wan`, instala o **PyTorch cu128** (obrigatório p/ Blackwell),
+   as dependências (`requirements_cuda.txt`), confere se a GPU foi detectada e
+   oferece baixar o checkpoint `ti2v-5B` (~16GB).
+
+4. **Abra a interface web:**
+   ```
+   run_ui_windows.bat
+   ```
+   (ou `venv_wan\Scripts\python app.py`) — abre em <http://127.0.0.1:7860>.
+
+5. Envie a foto, escreva o prompt, deixe **"Preservar a pessoa"** ligado, escolha
+   o preset **"Máxima qualidade (GPU)"** e gere.
+
+### Pela linha de comando (Windows)
+
+```powershell
+venv_wan\Scripts\python photo2video.py -i foto.jpg -p "a pessoa vira a cabeça e sorri" -o saida.mp4
+```
+
+### Dicas de VRAM (16GB)
+
+- **540p (`960*544`)** com 40–50 passos cabe folgado e já fica nítido. **Comece por aqui.**
+- **720p (`1280*704`)** é o topo de qualidade; em 16GB pode ficar no limite com 5s.
+  Se der **OOM**, reduza a duração (ex.: 3–4s) ou caia para 540p.
+- O wrapper sempre usa `--offload_model True` + `--convert_model_dtype` + `--t5_cpu`
+  na GPU, que é o que faz o ti2v-5B caber em 16GB.
+
+Referência de tempo: numa GPU desta classe, ~5s a 720p (50 passos) leva
+poucos minutos (a primeira geração é mais lenta porque carrega os modelos).
+
+## Fidelidade à pessoa (não mudar quem está na foto)
+
+A semelhança vem de três coisas combinadas:
+
+1. **A foto é o quadro inicial** do vídeo (próprio I2V do Wan).
+2. **Reforço de identidade nos prompts** — esta ferramenta adiciona, por padrão,
+   ao prompt positivo *"mesma pessoa, mesmo rosto, identidade preservada,
+   fotorrealista"* e ao negativo termos como *"rosto diferente, troca de
+   identidade, deformação facial, morphing"*. Controlado por
+   `--no-keep-identity` (CLI) ou pela caixa **"Preservar a pessoa"** (UI).
+3. **Boas escolhas de geração:**
+   - **Guidance ~5** (o ideal do modelo). Muito alto distorce o rosto; muito baixo ignora o prompt.
+   - No prompt, descreva **só o movimento/cena** ("vira a cabeça", "sorri", "anda
+     em direção à câmera") — **não** descreva as feições da pessoa, senão o modelo
+     tende a "recriar" um rosto.
+   - Movimentos **sutis e curtos (~5s)** preservam melhor; clipes longos derivam.
+   - Use uma foto **nítida, de frente e bem iluminada** do rosto.
