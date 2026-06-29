@@ -218,19 +218,55 @@ def load_editor(model: str = DEFAULT_MODEL, *, device: str | None = None,
     pipe = cls.from_pretrained(spec.hf_repo, **kwargs)
 
     if device == "cuda":
-        # offload p/ caber em 16GB: sequential é o mais econômico (e mais lento).
-        if lowvram:
-            pipe.enable_sequential_cpu_offload()
-        else:
-            pipe.enable_model_cpu_offload()
+        _place_on_cuda(pipe, lowvram=lowvram, quantized=("quantization_config" in kwargs))
+        # economias de memória do VAE/atenção (quando a pipeline suporta).
         for m in ("enable_vae_tiling", "enable_vae_slicing", "enable_attention_slicing"):
             if hasattr(pipe, m):
-                getattr(pipe, m)()
+                try:
+                    getattr(pipe, m)()
+                except Exception:
+                    pass
     else:
         pipe = pipe.to("cpu")
 
     _PIPELINE_CACHE[cache_key] = pipe
     return pipe
+
+
+def _place_on_cuda(pipe, *, lowvram: bool, quantized: bool) -> None:
+    """Coloca o pipeline na GPU com a estratégia de memória mais robusta.
+
+    A combinação certa de offload depende da versão do diffusers e de o modelo
+    estar quantizado (bitsandbytes 4-bit) ou não. Tentamos da mais econômica de
+    VRAM para a menos, caindo para a próxima se a atual não for suportada.
+    """
+    # Ordem de tentativas conforme o pedido do usuário.
+    if lowvram:
+        strategies = ["sequential", "model", "cuda"]
+    elif quantized:
+        # 4-bit já reduz muito a VRAM: tenta direto na GPU; offload como plano B.
+        strategies = ["model", "cuda", "sequential"]
+    else:
+        # bf16 não-quantizado em 16GB precisa de offload.
+        strategies = ["model", "sequential", "cuda"]
+
+    last_err = None
+    for strat in strategies:
+        try:
+            if strat == "sequential":
+                pipe.enable_sequential_cpu_offload()
+            elif strat == "model":
+                pipe.enable_model_cpu_offload()
+            else:  # "cuda": tudo na GPU (modelos pequenos/quantizados)
+                pipe.to("cuda")
+            log(f"Estratégia de memória: {strat}")
+            return
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            log(f"Estratégia '{strat}' indisponível ({e}); tentando a próxima…")
+    # Se nada funcionou, propaga o último erro para o chamador tratar.
+    if last_err is not None:
+        raise last_err
 
 
 def _load_image(path: str):
