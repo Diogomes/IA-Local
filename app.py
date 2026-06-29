@@ -28,6 +28,7 @@ from pathlib import Path
 import gradio as gr
 
 from photo2video import FPS_DEFAULT, WAN_REPO, generation_command, has_cuda
+import photo2photo as p2p
 
 ROOT = Path(__file__).resolve().parent
 OUTPUTS = ROOT / "outputs"
@@ -146,6 +147,47 @@ def gerar(imagem_path, prompt, resolucao_label, passos, duracao, guidance,
         yield None, ("❌ A geração falhou (código %s). Veja o terminal para o log. "
                      "Causas comuns: checkpoint não baixado, PyTorch sem suporte à "
                      "GPU (Blackwell exige cu128) ou falta de memória." % proc.returncode)
+
+
+# --- Edição de foto (roupa / fundo / corpo / try-on) -----------------------
+EDIT_TASK_LABELS = {v["label"]: k for k, v in p2p.TASKS.items()}
+EDIT_MODEL_LABELS = {
+    "Qwen-Image-Edit (livre, sem gate) — recomendado": "qwen-edit",
+    "FLUX.1 Kontext (gated no HF, não-comercial)": "flux-kontext",
+}
+
+
+def editar(imagem_path, ref_path, task_label, descricao, manter_pessoa,
+           modelo_label, passos, guidance, seed, negativo, lowvram,
+           progress=gr.Progress()):
+    if not imagem_path:
+        yield None, "⚠️ Envie uma foto primeiro."
+        return
+    if not CUDA:
+        yield None, ("⚠️ A edição usa modelos de 12–20B e só roda na GPU "
+                     "(RTX 5070 Ti). Nesta máquina (CPU) é inviável. Rode o app "
+                     "no PC com a GPU.")
+        return
+
+    task = EDIT_TASK_LABELS.get(task_label, p2p.TASK_DEFAULT)
+    model = EDIT_MODEL_LABELS.get(modelo_label, p2p.DEFAULT_MODEL)
+    instruction = p2p.build_instruction(task, descricao, keep_identity=bool(manter_pessoa))
+    ref = ref_path if (task == "tryon" or ref_path) else None
+
+    yield None, (f"⏳ Carregando o modelo {model} (a 1ª vez baixa vários GB e "
+                 "demora). Edição em 4-bit p/ caber em 16GB…\n"
+                 f"Instrução: {instruction}")
+    try:
+        out = p2p.edit_photo(
+            image=imagem_path, instruction=instruction, model=model, reference=ref,
+            steps=int(passos) or None, guidance=float(guidance), seed=int(seed),
+            negative=(negativo or "").strip() or None, device="cuda",
+            quantize="4bit", lowvram=bool(lowvram), progress=progress)
+    except Exception as e:
+        yield None, (f"❌ Falhou: {e}\nDicas: marque 'Low-VRAM' se for OOM; para "
+                     "FLUX Kontext aceite a licença no HF e rode `hf auth login`.")
+        return
+    yield str(out), f"✅ Pronto! Imagem salva em {out.name}."
 
 
 _GPU_TXT = ("**Dispositivo: GPU (CUDA) ✅** — pode usar 540p/720p e 40-50 passos."
@@ -329,44 +371,96 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
                 f"Dispositivo detectado: <strong>{'GPU (CUDA)' if CUDA else 'CPU (lento)'}</strong></p>"
                 "</div>"
             )
-    gr.Markdown(AVISO_QUALIDADE, elem_classes=["notice"])
+    with gr.Tabs():
+        # ---------------- Aba 1: Foto -> Vídeo ----------------
+        with gr.Tab("🎬 Foto → Vídeo"):
+            gr.Markdown(AVISO_QUALIDADE, elem_classes=["notice"])
+            with gr.Row():
+                with gr.Column(scale=1, elem_classes=["work-panel"]):
+                    imagem = gr.Image(type="filepath", label="Foto de entrada", height=300)
+                    prompt = gr.Textbox(label="Prompt (o que deve acontecer no vídeo)", lines=3,
+                                        placeholder=PROMPT_EXEMPLO, value=PROMPT_EXEMPLO)
+                    manter_pessoa = gr.Checkbox(
+                        value=True, label="🎯 Preservar a pessoa (rosto/identidade) — recomendado")
+                    preset = gr.Radio(choices=list(PRESETS) + ["Personalizado"],
+                                      value=PRESET_DEFAULT, label="Preset")
 
-    with gr.Row():
-        with gr.Column(scale=1, elem_classes=["work-panel"]):
-            imagem = gr.Image(type="filepath", label="Foto de entrada", height=300)
-            prompt = gr.Textbox(label="Prompt (o que deve acontecer no vídeo)", lines=3,
-                                placeholder=PROMPT_EXEMPLO, value=PROMPT_EXEMPLO)
-            manter_pessoa = gr.Checkbox(
-                value=True, label="🎯 Preservar a pessoa (rosto/identidade) — recomendado")
-            preset = gr.Radio(choices=list(PRESETS) + ["Personalizado"],
-                              value=PRESET_DEFAULT, label="Preset")
+                    with gr.Accordion("Ajustes avançados", open=False):
+                        resolucao = gr.Dropdown(choices=list(RESOLUCOES),
+                                                value=PRESETS[PRESET_DEFAULT][0],
+                                                label="Resolução")
+                        passos = gr.Slider(4, 60, value=PRESETS[PRESET_DEFAULT][1], step=1,
+                                           label="Passos de difusão (↑ = melhor e mais lento)")
+                        duracao = gr.Slider(1.0, 10.0, value=PRESETS[PRESET_DEFAULT][2], step=0.5,
+                                            label="Duração (segundos) — ideal ≤5s")
+                        guidance = gr.Slider(1.0, 12.0, value=PRESETS[PRESET_DEFAULT][3], step=0.5,
+                                             label="Guidance (aderência ao prompt; ~5 é o ideal)")
+                        negativo_extra = gr.Textbox(
+                            label="Prompt negativo extra (o que evitar — opcional)", lines=2,
+                            placeholder="ex.: fundo cheio de gente, texto na tela, cores saturadas")
 
-            with gr.Accordion("Ajustes avançados", open=False):
-                resolucao = gr.Dropdown(choices=list(RESOLUCOES),
-                                        value=PRESETS[PRESET_DEFAULT][0],
-                                        label="Resolução")
-                passos = gr.Slider(4, 60, value=PRESETS[PRESET_DEFAULT][1], step=1,
-                                   label="Passos de difusão (↑ = melhor e mais lento)")
-                duracao = gr.Slider(1.0, 10.0, value=PRESETS[PRESET_DEFAULT][2], step=0.5,
-                                    label="Duração (segundos) — ideal ≤5s")
-                guidance = gr.Slider(1.0, 12.0, value=PRESETS[PRESET_DEFAULT][3], step=0.5,
-                                     label="Guidance (aderência ao prompt; ~5 é o ideal)")
-                negativo_extra = gr.Textbox(
-                    label="Prompt negativo extra (o que evitar — opcional)", lines=2,
-                    placeholder="ex.: fundo cheio de gente, texto na tela, cores saturadas")
+                    botao = gr.Button("🎬 Gerar vídeo", variant="primary")
 
-            botao = gr.Button("🎬 Gerar vídeo", variant="primary")
+                with gr.Column(scale=1, elem_classes=["work-panel"]):
+                    video = gr.Video(label="Resultado", height=360)
+                    status = gr.Textbox(label="Status", interactive=False, lines=6)
 
-        with gr.Column(scale=1, elem_classes=["work-panel"]):
-            video = gr.Video(label="Resultado", height=360)
-            status = gr.Textbox(label="Status", interactive=False, lines=6)
+            preset.change(aplicar_preset, inputs=preset,
+                          outputs=[resolucao, passos, duracao, guidance], api_name=False)
+            botao.click(gerar,
+                        inputs=[imagem, prompt, resolucao, passos, duracao, guidance,
+                                manter_pessoa, negativo_extra],
+                        outputs=[video, status], api_name="gerar")
 
-    preset.change(aplicar_preset, inputs=preset,
-                  outputs=[resolucao, passos, duracao, guidance], api_name=False)
-    botao.click(gerar,
-                inputs=[imagem, prompt, resolucao, passos, duracao, guidance,
-                        manter_pessoa, negativo_extra],
-                outputs=[video, status], api_name="gerar")
+        # ---------------- Aba 2: Editar foto ----------------
+        with gr.Tab("🖼️ Editar foto (roupa / fundo / corpo)"):
+            gr.Markdown(
+                "> 🎯 Edita a foto **mantendo a mesma pessoa**: trocar roupa "
+                "(inclui roupa de praia), trocar o fundo/cenário, ou recriar o "
+                "**corpo inteiro** a partir de um retrato do rosto.\n"
+                "> Use fotos suas ou de quem consentiu. **Precisa de GPU** "
+                "(roda na RTX 5070 Ti em 4-bit).", elem_classes=["notice"])
+            with gr.Row():
+                with gr.Column(scale=1, elem_classes=["work-panel"]):
+                    ed_imagem = gr.Image(type="filepath", label="Foto de entrada (a pessoa)", height=280)
+                    ed_task = gr.Radio(choices=list(EDIT_TASK_LABELS),
+                                       value=list(EDIT_TASK_LABELS)[0], label="O que fazer")
+                    ed_desc = gr.Textbox(label="Descrição da mudança", lines=2,
+                                         placeholder=p2p.TASKS[p2p.TASK_DEFAULT]["placeholder"])
+                    ed_ref = gr.Image(type="filepath", visible=False, height=160,
+                                      label="Peça de roupa de referência (try-on)")
+                    ed_keep = gr.Checkbox(value=True,
+                                          label="🎯 Preservar a pessoa — recomendado")
+
+                    with gr.Accordion("Ajustes avançados", open=False):
+                        ed_model = gr.Dropdown(choices=list(EDIT_MODEL_LABELS),
+                                               value=list(EDIT_MODEL_LABELS)[0], label="Modelo")
+                        ed_steps = gr.Slider(10, 60, value=p2p.MODELS[p2p.DEFAULT_MODEL].default_steps,
+                                             step=1, label="Passos")
+                        ed_guidance = gr.Slider(1.0, 10.0,
+                                                value=p2p.MODELS[p2p.DEFAULT_MODEL].default_guidance,
+                                                step=0.5, label="Aderência à instrução")
+                        ed_seed = gr.Number(value=42, label="Seed", precision=0)
+                        ed_neg = gr.Textbox(label="Evitar (negativo extra — opcional)", lines=2)
+                        ed_lowvram = gr.Checkbox(value=False,
+                                                 label="Low-VRAM (mais lento; use se der OOM)")
+
+                    ed_botao = gr.Button("🖼️ Editar foto", variant="primary")
+
+                with gr.Column(scale=1, elem_classes=["work-panel"]):
+                    ed_saida = gr.Image(label="Resultado", height=360)
+                    ed_status = gr.Textbox(label="Status", interactive=False, lines=6)
+
+            def _toggle_ref(task_label):
+                is_tryon = EDIT_TASK_LABELS.get(task_label) == "tryon"
+                ph = p2p.TASKS.get(EDIT_TASK_LABELS.get(task_label, "livre"), {}).get("placeholder", "")
+                return gr.update(visible=is_tryon), gr.update(placeholder=ph)
+
+            ed_task.change(_toggle_ref, inputs=ed_task, outputs=[ed_ref, ed_desc], api_name=False)
+            ed_botao.click(editar,
+                           inputs=[ed_imagem, ed_ref, ed_task, ed_desc, ed_keep,
+                                   ed_model, ed_steps, ed_guidance, ed_seed, ed_neg, ed_lowvram],
+                           outputs=[ed_saida, ed_status], api_name="editar")
 
 
 if __name__ == "__main__":

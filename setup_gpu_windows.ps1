@@ -100,7 +100,17 @@ if (Test-Path (Join-Path $ckpt "Wan2.2_VAE.pth")) {
     }
 }
 
+# --- 7) Modelo de edição de foto (photo2photo, opcional) ---------------------
+$r2 = Read-Host "Baixar agora o modelo de EDIÇÃO de foto Qwen-Image-Edit (~20GB)? [s/N]"
+if ($r2 -eq "s" -or $r2 -eq "S") {
+    & $vpy (Join-Path $PSScriptRoot "photo2photo.py") --model qwen-edit --download-only
+} else {
+    Write-Host "Pulei. O modelo de edição baixa sozinho no 1º uso da aba 'Editar foto'," -ForegroundColor Yellow
+    Write-Host "ou rode: venv_wan\Scripts\python photo2photo.py --model qwen-edit --download-only" -ForegroundColor Yellow
+}
+
 Write-Host ""
 Write-Host "=== Setup concluído ===" -ForegroundColor Green
 Write-Host "Abrir a interface web:  .\run_ui_windows.bat" -ForegroundColor Green
 Write-Host "Ou pela CLI:            venv_wan\Scripts\python app.py" -ForegroundColor Green
+Write-Host "Edição por linha de comando: venv_wan\Scripts\python photo2photo.py --help" -ForegroundColor Green
