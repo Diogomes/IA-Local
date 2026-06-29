@@ -238,6 +238,18 @@ O `--quantize 4bit` (padrão) faz o editor caber em 16GB; se faltar VRAM, some
 > try-on, restauração). A ferramenta **não** se destina a criar imagens
 > sexuais/íntimas de pessoas reais sem consentimento.
 
+### Fluxo combinado: editar → animar
+
+Na aba **Editar foto**, depois de gerar um resultado você pode:
+
+- **🎬 Animar este resultado** — joga a imagem editada direto na aba *Foto → Vídeo*
+  (ex.: troque a roupa/cenário e então anime a pessoa já com o novo look).
+- **♻️ Usar como nova entrada** — usa o resultado como entrada de uma nova edição,
+  encadeando mudanças (ex.: trocar a roupa e, no passo seguinte, trocar o fundo).
+
+Assim dá para ir de um retrato simples a um vídeo com a pessoa de corpo inteiro,
+roupa nova e cenário novo, sempre preservando a identidade.
+
 ## Fidelidade à pessoa (não mudar quem está na foto)
 
 A semelhança vem de três coisas combinadas:

@@ -371,9 +371,9 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
                 f"Dispositivo detectado: <strong>{'GPU (CUDA)' if CUDA else 'CPU (lento)'}</strong></p>"
                 "</div>"
             )
-    with gr.Tabs():
+    with gr.Tabs() as tabs:
         # ---------------- Aba 1: Foto -> Vídeo ----------------
-        with gr.Tab("🎬 Foto → Vídeo"):
+        with gr.Tab("🎬 Foto → Vídeo", id="video"):
             gr.Markdown(AVISO_QUALIDADE, elem_classes=["notice"])
             with gr.Row():
                 with gr.Column(scale=1, elem_classes=["work-panel"]):
@@ -413,7 +413,7 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
                         outputs=[video, status], api_name="gerar")
 
         # ---------------- Aba 2: Editar foto ----------------
-        with gr.Tab("🖼️ Editar foto (roupa / fundo / corpo)"):
+        with gr.Tab("🖼️ Editar foto (roupa / fundo / corpo)", id="editar"):
             gr.Markdown(
                 "> 🎯 Edita a foto **mantendo a mesma pessoa**: trocar roupa "
                 "(inclui roupa de praia), trocar o fundo/cenário, ou recriar o "
@@ -448,8 +448,11 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
                     ed_botao = gr.Button("🖼️ Editar foto", variant="primary")
 
                 with gr.Column(scale=1, elem_classes=["work-panel"]):
-                    ed_saida = gr.Image(label="Resultado", height=360)
+                    ed_saida = gr.Image(type="filepath", label="Resultado", height=360)
                     ed_status = gr.Textbox(label="Status", interactive=False, lines=6)
+                    with gr.Row():
+                        ed_to_video = gr.Button("🎬 Animar este resultado")
+                        ed_reuse = gr.Button("♻️ Usar como nova entrada")
 
             def _toggle_ref(task_label):
                 is_tryon = EDIT_TASK_LABELS.get(task_label) == "tryon"
@@ -461,6 +464,24 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
                            inputs=[ed_imagem, ed_ref, ed_task, ed_desc, ed_keep,
                                    ed_model, ed_steps, ed_guidance, ed_seed, ed_neg, ed_lowvram],
                            outputs=[ed_saida, ed_status], api_name="editar")
+
+    # --- Fluxo entre abas: editar -> animar / encadear edições ---
+    def _enviar_para_video(edited_path):
+        if not edited_path:
+            return gr.update(), gr.update(), gr.update()
+        # joga a imagem editada na entrada do vídeo e pula para a aba de vídeo.
+        return (gr.update(value=edited_path), gr.Tabs(selected="video"),
+                "✅ Imagem editada carregada na aba de vídeo — escreva o prompt e gere.")
+
+    def _reusar_como_entrada(edited_path):
+        if not edited_path:
+            return gr.update(), "⚠️ Gere uma edição primeiro."
+        return gr.update(value=edited_path), "♻️ Resultado virou a nova entrada — edite de novo (ex.: troque o fundo agora)."
+
+    ed_to_video.click(_enviar_para_video, inputs=ed_saida,
+                      outputs=[imagem, tabs, status], api_name=False)
+    ed_reuse.click(_reusar_como_entrada, inputs=ed_saida,
+                   outputs=[ed_imagem, ed_status], api_name=False)
 
 
 if __name__ == "__main__":
