@@ -81,34 +81,23 @@ def aplicar_preset(preset: str):
             gr.update(value=dur), gr.update(value=guide))
 
 
-def gerar(imagem_path, prompt, resolucao_label, passos, duracao, guidance,
-          manter_pessoa, negativo_extra, melhorar_video, escala_video,
-          progress=gr.Progress()):
-    if not imagem_path:
-        yield None, "⚠️ Envie uma foto primeiro."
-        return
-    if not prompt or not prompt.strip():
-        yield None, "⚠️ Escreva um prompt descrevendo o movimento/cena."
-        return
+def _stream_video(imagem_path, prompt, size, frames, passos, guidance,
+                  manter_pessoa, negativo_extra, melhorar_video, escala_video,
+                  progress):
+    """Gera o vídeo (subprocesso Wan) e faz streaming do progresso.
 
-    size = RESOLUCOES.get(resolucao_label, "256*256")
-    frames = frames_para_duracao(float(duracao))
-    saida = OUTPUTS / f"video_{uuid.uuid4().hex[:8]}.mp4"
-    # Em resoluções pequenas o Wan recomenda shift=3.0; em 480p+ usa 5.0.
+    Generator que produz (video_path_ou_None, status). Reaproveitado pela aba de
+    vídeo e pelo Estúdio (animar no fim).
+    """
     w, h = (int(x) for x in size.split("*"))
     shift = 3.0 if w * h <= 512 * 512 else 5.0
+    saida = OUTPUTS / f"video_{uuid.uuid4().hex[:8]}.mp4"
 
     cmd, _ = generation_command(
         image=imagem_path, prompt=prompt.strip(), size=size, frame_num=frames,
         steps=int(passos), output=saida, guide_scale=float(guidance),
         shift=shift, cuda=CUDA, keep_identity=bool(manter_pessoa),
         negative_prompt=(negativo_extra or "").strip() or None)
-
-    yield None, (f"⏳ Iniciando… {size}, {frames} frames (~{frames/FPS_DEFAULT:.1f}s), "
-                 f"{int(passos)} passos, guidance {guidance}.\n"
-                 + ("🎯 Preservação da pessoa: LIGADA.\n" if manter_pessoa else "")
-                 + ("" if CUDA else "Em CPU é LENTO: carregar o modelo já leva ~1 min "
-                    "e cada passo demora; resoluções altas podem levar horas."))
 
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -163,6 +152,28 @@ def gerar(imagem_path, prompt, resolucao_label, passos, duracao, guidance,
         yield None, ("❌ A geração falhou (código %s). Veja o terminal para o log. "
                      "Causas comuns: checkpoint não baixado, PyTorch sem suporte à "
                      "GPU (Blackwell exige cu128) ou falta de memória." % proc.returncode)
+
+
+def gerar(imagem_path, prompt, resolucao_label, passos, duracao, guidance,
+          manter_pessoa, negativo_extra, melhorar_video, escala_video,
+          progress=gr.Progress()):
+    if not imagem_path:
+        yield None, "⚠️ Envie uma foto primeiro."
+        return
+    if not prompt or not prompt.strip():
+        yield None, "⚠️ Escreva um prompt descrevendo o movimento/cena."
+        return
+
+    size = RESOLUCOES.get(resolucao_label, "256*256")
+    frames = frames_para_duracao(float(duracao))
+    yield None, (f"⏳ Iniciando… {size}, {frames} frames (~{frames/FPS_DEFAULT:.1f}s), "
+                 f"{int(passos)} passos, guidance {guidance}.\n"
+                 + ("🎯 Preservação da pessoa: LIGADA.\n" if manter_pessoa else "")
+                 + ("" if CUDA else "Em CPU é LENTO: carregar o modelo já leva ~1 min "
+                    "e cada passo demora; resoluções altas podem levar horas."))
+    yield from _stream_video(imagem_path, prompt, size, frames, passos, guidance,
+                             manter_pessoa, negativo_extra, melhorar_video,
+                             escala_video, progress)
 
 
 # --- Edição de foto (roupa / fundo / corpo / try-on) -----------------------
@@ -249,17 +260,17 @@ def editar(imagem_path, ref_path, task_label, descricao, manter_pessoa,
 
 def estudio(imagem_path, fullbody, fb_desc, outpaint, roupa, fundo, keep,
             modelo_label, passos, guidance, seed, lowvram, melhorar, escala,
-            checkid, progress=gr.Progress()):
+            checkid, animar, video_prompt, progress=gr.Progress()):
     if not imagem_path:
-        yield None, None, "⚠️ Envie uma foto primeiro."
+        yield None, None, None, "⚠️ Envie uma foto primeiro."
         return
     if not CUDA:
-        yield None, None, ("⚠️ O Estúdio usa modelos de 12–20B e só roda na GPU "
-                           "(RTX 5070 Ti). Rode o app no PC com a GPU.")
+        yield None, None, None, ("⚠️ O Estúdio usa modelos de 12–20B e só roda na "
+                                 "GPU (RTX 5070 Ti). Rode o app no PC com a GPU.")
         return
     if not (fullbody or (roupa or "").strip() or (fundo or "").strip() or melhorar):
-        yield None, None, ("⚠️ Escolha ao menos uma transformação (corpo / roupa / "
-                           "fundo) ou marque melhorar qualidade.")
+        yield None, None, None, ("⚠️ Escolha ao menos uma transformação (corpo / "
+                                 "roupa / fundo) ou marque melhorar qualidade.")
         return
 
     model = EDIT_MODEL_LABELS.get(modelo_label, p2p.DEFAULT_MODEL)
@@ -267,8 +278,10 @@ def estudio(imagem_path, fullbody, fb_desc, outpaint, roupa, fundo, keep,
         "corpo" if fullbody else "", "roupa" if (roupa or "").strip() else "",
         "fundo" if (fundo or "").strip() else "",
         "qualidade" if melhorar else ""] if s]) or "qualidade"
-    yield None, None, (f"⏳ Pipeline: {etapas}. Cada etapa usa o modelo (a 1ª vez "
-                       "baixa vários GB). Isso pode levar alguns minutos…")
+    if animar:
+        etapas += " → 🎬 animar"
+    yield None, None, None, (f"⏳ Pipeline: {etapas}. Cada etapa usa o modelo (a 1ª "
+                             "vez baixa vários GB). Isso pode levar alguns minutos…")
     try:
         res = p2p.studio_transform(
             image=imagem_path, model=model, steps=int(passos) or None,
@@ -278,13 +291,25 @@ def estudio(imagem_path, fullbody, fb_desc, outpaint, roupa, fundo, keep,
             roupa=roupa, fundo=fundo, upscale=int(escala) if melhorar else 1,
             face_restore=bool(melhorar), identity_check=bool(checkid))
     except Exception as e:
-        yield None, None, (f"❌ Falhou: {e}\nDicas: marque 'Low-VRAM' se for OOM; "
-                           "para FLUX Fill aceite a licença no HF e rode `hf auth login`.")
+        yield None, None, None, (f"❌ Falhou: {e}\nDicas: marque 'Low-VRAM' se for "
+                                 "OOM; para FLUX Fill aceite a licença no HF e rode "
+                                 "`hf auth login`.")
         return
     extra = "\n".join(res.notes)
     aviso = ("\n⚠️ A identidade pode ter mudado — tente outra seed."
              if (res.identity_similarity is not None and not res.identity_ok) else "")
-    yield str(res.path), res.steps, f"✅ Pronto! Salvo em {res.path.name}.\n{extra}{aviso}"
+    base_status = f"✅ Imagem pronta: {res.path.name}.\n{extra}{aviso}"
+    yield str(res.path), res.steps, None, base_status
+
+    if not animar:
+        return
+    vp = (video_prompt or "").strip() or PROMPT_EXEMPLO
+    # Anima o resultado final em 540p ~5s (cabe bem na 5070 Ti).
+    size = RESOLUCOES["540p — alta qualidade, mais leve (960×544, GPU)"]
+    frames = frames_para_duracao(5.0)
+    for vid, vstatus in _stream_video(
+            str(res.path), vp, size, frames, 40, 5.0, True, None, False, 2, progress):
+        yield str(res.path), res.steps, vid, f"{base_status}\n— {vstatus}"
 
 
 LOTE_TASK_LABELS = {
@@ -654,6 +679,10 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
                     st_fundo = gr.Textbox(label="🏞️ Novo fundo (deixe vazio p/ não trocar)", lines=1,
                                           placeholder="ex.: praia tropical ao pôr do sol")
                     st_keep = gr.Checkbox(value=True, label="🎯 Preservar a pessoa — recomendado")
+                    st_animar = gr.Checkbox(value=False,
+                                            label="🎬 Animar no fim (gera um vídeo 540p ~5s do resultado)")
+                    st_vprompt = gr.Textbox(label="Prompt do vídeo (se animar)", lines=2,
+                                            placeholder=PROMPT_EXEMPLO)
 
                     with gr.Accordion("Ajustes avançados", open=False):
                         st_model = gr.Dropdown(choices=list(EDIT_MODEL_LABELS),
@@ -673,17 +702,19 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
                     st_botao = gr.Button("✨ Transformar", variant="primary")
 
                 with gr.Column(scale=1, elem_classes=["work-panel"]):
-                    st_saida = gr.Image(type="filepath", label="Resultado final", height=320)
-                    st_gallery = gr.Gallery(label="Etapas (galeria)", columns=4, height=160)
-                    st_status = gr.Textbox(label="Status", interactive=False, lines=6)
-                    st_to_video = gr.Button("🎬 Animar este resultado")
+                    st_saida = gr.Image(type="filepath", label="Resultado final", height=300)
+                    st_video = gr.Video(label="Vídeo (se animar)", height=240)
+                    st_gallery = gr.Gallery(label="Etapas (galeria)", columns=4, height=140)
+                    st_status = gr.Textbox(label="Status", interactive=False, lines=5)
+                    st_to_video = gr.Button("🎬 Animar este resultado (na aba de vídeo)")
 
             st_botao.click(estudio,
                            inputs=[st_imagem, st_fullbody, st_fb_desc, st_outpaint,
                                    st_roupa, st_fundo, st_keep, st_model, st_steps,
                                    st_guidance, st_seed, st_lowvram, st_melhorar,
-                                   st_escala, st_checkid],
-                           outputs=[st_saida, st_gallery, st_status], api_name="estudio")
+                                   st_escala, st_checkid, st_animar, st_vprompt],
+                           outputs=[st_saida, st_gallery, st_video, st_status],
+                           api_name="estudio")
 
         # ---------------- Aba 4: Lote (vários looks/cenários) ----------------
         with gr.Tab("🗂️ Lote (vários looks/cenários)", id="lote"):
