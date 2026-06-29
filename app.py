@@ -220,6 +220,46 @@ def editar(imagem_path, ref_path, task_label, descricao, manter_pessoa,
     yield str(res.path), f"✅ Pronto! Salvo em {res.path.name}.{extra}{aviso}"
 
 
+def estudio(imagem_path, fullbody, fb_desc, outpaint, roupa, fundo, keep,
+            modelo_label, passos, guidance, seed, lowvram, melhorar, escala,
+            checkid, progress=gr.Progress()):
+    if not imagem_path:
+        yield None, None, "⚠️ Envie uma foto primeiro."
+        return
+    if not CUDA:
+        yield None, None, ("⚠️ O Estúdio usa modelos de 12–20B e só roda na GPU "
+                           "(RTX 5070 Ti). Rode o app no PC com a GPU.")
+        return
+    if not (fullbody or (roupa or "").strip() or (fundo or "").strip() or melhorar):
+        yield None, None, ("⚠️ Escolha ao menos uma transformação (corpo / roupa / "
+                           "fundo) ou marque melhorar qualidade.")
+        return
+
+    model = EDIT_MODEL_LABELS.get(modelo_label, p2p.DEFAULT_MODEL)
+    etapas = " → ".join([s for s in [
+        "corpo" if fullbody else "", "roupa" if (roupa or "").strip() else "",
+        "fundo" if (fundo or "").strip() else "",
+        "qualidade" if melhorar else ""] if s]) or "qualidade"
+    yield None, None, (f"⏳ Pipeline: {etapas}. Cada etapa usa o modelo (a 1ª vez "
+                       "baixa vários GB). Isso pode levar alguns minutos…")
+    try:
+        res = p2p.studio_transform(
+            image=imagem_path, model=model, steps=int(passos) or None,
+            guidance=float(guidance), seed=int(seed), device="cuda", quantize="4bit",
+            lowvram=bool(lowvram), progress=progress, keep_identity=bool(keep),
+            full_body=bool(fullbody), full_body_desc=fb_desc, outpaint=bool(outpaint),
+            roupa=roupa, fundo=fundo, upscale=int(escala) if melhorar else 1,
+            face_restore=bool(melhorar), identity_check=bool(checkid))
+    except Exception as e:
+        yield None, None, (f"❌ Falhou: {e}\nDicas: marque 'Low-VRAM' se for OOM; "
+                           "para FLUX Fill aceite a licença no HF e rode `hf auth login`.")
+        return
+    extra = "\n".join(res.notes)
+    aviso = ("\n⚠️ A identidade pode ter mudado — tente outra seed."
+             if (res.identity_similarity is not None and not res.identity_ok) else "")
+    yield str(res.path), res.steps, f"✅ Pronto! Salvo em {res.path.name}.\n{extra}{aviso}"
+
+
 _GPU_TXT = ("**Dispositivo: GPU (CUDA) ✅** — pode usar 540p/720p e 40-50 passos."
             if CUDA else
             "**Dispositivo: CPU (lento) ⚠️** — use os presets de *teste*. "
@@ -509,6 +549,59 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
                                    ed_melhorar, ed_escala, ed_checkid, ed_outpaint],
                            outputs=[ed_saida, ed_status], api_name="editar")
 
+        # ---------------- Aba 3: Estúdio (1 clique) ----------------
+        with gr.Tab("✨ Estúdio (transformação completa)", id="estudio"):
+            gr.Markdown(
+                "> ✨ **Um clique** encadeia tudo, preservando a pessoa: recriar "
+                "**corpo inteiro** → trocar **roupa** → trocar **fundo** → "
+                "**melhorar qualidade**. Preencha só o que quiser mudar.\n"
+                "> **Precisa de GPU.** Cada etapa usa o modelo de edição.",
+                elem_classes=["notice"])
+            with gr.Row():
+                with gr.Column(scale=1, elem_classes=["work-panel"]):
+                    st_imagem = gr.Image(type="filepath", label="Foto de entrada", height=260)
+                    st_fullbody = gr.Checkbox(value=False,
+                                              label="🧍 Recriar corpo inteiro (a partir do rosto)")
+                    st_fb_desc = gr.Textbox(label="Corpo: cena/pose (opcional)", lines=1,
+                                            placeholder="ex.: em pé, de frente, num parque")
+                    st_outpaint = gr.Checkbox(value=False,
+                                              label="↳ usar outpaint com máscara (FLUX Fill)")
+                    st_roupa = gr.Textbox(label="👗 Nova roupa (deixe vazio p/ não trocar)", lines=1,
+                                          placeholder="ex.: biquíni de praia / terno social")
+                    st_fundo = gr.Textbox(label="🏞️ Novo fundo (deixe vazio p/ não trocar)", lines=1,
+                                          placeholder="ex.: praia tropical ao pôr do sol")
+                    st_keep = gr.Checkbox(value=True, label="🎯 Preservar a pessoa — recomendado")
+
+                    with gr.Accordion("Ajustes avançados", open=False):
+                        st_model = gr.Dropdown(choices=list(EDIT_MODEL_LABELS),
+                                               value=list(EDIT_MODEL_LABELS)[0], label="Modelo (roupa/fundo)")
+                        st_steps = gr.Slider(10, 60, value=p2p.MODELS[p2p.DEFAULT_MODEL].default_steps,
+                                             step=1, label="Passos por etapa")
+                        st_guidance = gr.Slider(1.0, 10.0,
+                                                value=p2p.MODELS[p2p.DEFAULT_MODEL].default_guidance,
+                                                step=0.5, label="Aderência")
+                        st_seed = gr.Number(value=42, label="Seed", precision=0)
+                        st_lowvram = gr.Checkbox(value=False, label="Low-VRAM")
+                        st_melhorar = gr.Checkbox(value=True,
+                                                  label="✨ Melhorar qualidade no fim (rosto + upscale)")
+                        st_escala = gr.Radio(choices=[1, 2, 4], value=2, label="Upscale (×)")
+                        st_checkid = gr.Checkbox(value=True, label="🔎 Checar identidade no fim")
+
+                    st_botao = gr.Button("✨ Transformar", variant="primary")
+
+                with gr.Column(scale=1, elem_classes=["work-panel"]):
+                    st_saida = gr.Image(type="filepath", label="Resultado final", height=320)
+                    st_gallery = gr.Gallery(label="Etapas (galeria)", columns=4, height=160)
+                    st_status = gr.Textbox(label="Status", interactive=False, lines=6)
+                    st_to_video = gr.Button("🎬 Animar este resultado")
+
+            st_botao.click(estudio,
+                           inputs=[st_imagem, st_fullbody, st_fb_desc, st_outpaint,
+                                   st_roupa, st_fundo, st_keep, st_model, st_steps,
+                                   st_guidance, st_seed, st_lowvram, st_melhorar,
+                                   st_escala, st_checkid],
+                           outputs=[st_saida, st_gallery, st_status], api_name="estudio")
+
     # --- Fluxo entre abas: editar -> animar / encadear edições ---
     def _enviar_para_video(edited_path):
         if not edited_path:
@@ -526,6 +619,8 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
                       outputs=[imagem, tabs, status], api_name=False)
     ed_reuse.click(_reusar_como_entrada, inputs=ed_saida,
                    outputs=[ed_imagem, ed_status], api_name=False)
+    st_to_video.click(_enviar_para_video, inputs=st_saida,
+                      outputs=[imagem, tabs, status], api_name=False)
 
 
 if __name__ == "__main__":
