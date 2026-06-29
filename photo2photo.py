@@ -537,6 +537,40 @@ def generate_variations(*, image: str, instruction: str, model: str = DEFAULT_MO
     return results
 
 
+def batch_edit(*, image: str, task: str = "roupa", items: list,
+               model: str = DEFAULT_MODEL, steps: int | None = None,
+               guidance: float | None = None, seed: int = 42,
+               keep_identity: bool = True, negative: str | None = None,
+               reference: str | None = None, device: str | None = None,
+               quantize: str | None = None, lowvram: bool = False, progress=None,
+               upscale: int = 1, face_restore: bool = False,
+               identity_check: bool = False, identity_threshold: float = 0.45) -> list:
+    """Aplica a MESMA tarefa a vários textos (1 por item) na mesma foto.
+
+    Ex.: task='roupa', items=['biquíni','terno','vestido'] -> 3 imagens. Usa a
+    mesma seed em todos (só o texto muda), para comparar os looks de forma justa.
+    Devolve uma lista de tuplas (texto, EditResult), na ordem dos itens.
+    """
+    itens = [s.strip() for s in (items or []) if s and s.strip()]
+    out = []
+    for i, desc in enumerate(itens):
+        if progress is not None:
+            try:
+                progress(i / len(itens), desc=f"{i + 1}/{len(itens)}: {desc[:24]}")
+            except Exception:
+                pass
+        instr = build_instruction(task, desc, keep_identity=keep_identity)
+        r = edit_photo(image=image, instruction=instr, model=model, reference=reference,
+                       steps=steps, guidance=guidance, seed=int(seed), negative=negative,
+                       device=device, quantize=quantize, lowvram=lowvram,
+                       upscale=upscale, face_restore=face_restore,
+                       identity_check=identity_check,
+                       identity_threshold=identity_threshold, max_retries=0)
+        r.notes.insert(0, f"item: {desc}")
+        out.append((desc, r))
+    return out
+
+
 def studio_transform(*, image: str, model: str = DEFAULT_MODEL,
                      steps: int | None = None, guidance: float | None = None,
                      seed: int = 42, device: str | None = None,

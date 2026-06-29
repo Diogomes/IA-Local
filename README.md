@@ -272,6 +272,13 @@ venv_wan\Scripts\python photo2photo.py -i rosto.jpg --studio --full-body ^
   --roupa "terno social" --fundo "escritório moderno" --enhance --check-identity
 ```
 
+## Lote: vários looks/cenários de uma vez
+
+A aba **"🗂️ Lote"** aplica a **mesma tarefa** (trocar roupa, trocar fundo ou
+livre) a **vários textos de uma vez** — um por linha — na mesma foto. Mesma
+pessoa e mesma seed em todos (só o texto muda), então dá para **comparar looks
+ou cenários** lado a lado numa galeria. Ex.: cole 4 roupas, receba 4 imagens.
+
 ## Qualidade máxima e fidelidade medida (opcional)
 
 Recursos extras, ativáveis na UI ou na CLI. As libs são **opcionais** e carregam
