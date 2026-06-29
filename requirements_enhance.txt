@@ -1,0 +1,26 @@
+# Dependências OPCIONAIS para os recursos de qualidade e fidelidade:
+#   * upscale (super-resolução) ......... spandrel + Real-ESRGAN
+#   * restauração de rosto .............. gfpgan (puxa basicsr, facexlib)
+#   * checagem de identidade ............ insightface + onnxruntime
+#
+# Tudo é carregado sob demanda e degrada com elegância: se algo aqui faltar, o
+# app continua funcionando — só pula o recurso correspondente. Instale com:
+#   venv_wan\Scripts\python -m pip install -r requirements_enhance.txt   (Windows)
+#
+# Nota Windows/torch novo: gfpgan/basicsr importam
+# `torchvision.transforms.functional_tensor`, removido no torchvision atual.
+# O enhance.py aplica um shim de compatibilidade automaticamente.
+
+# --- upscale ---
+spandrel>=0.3.4
+
+# --- restauração de rosto ---
+gfpgan>=1.3.8
+# basicsr/facexlib vêm como dependências do gfpgan; fixados aqui por garantia:
+facexlib>=0.3.0
+
+# --- checagem de identidade (embedding facial) ---
+insightface>=0.7.3
+# onnxruntime (CPU) funciona em qualquer lugar. Para usar a GPU, troque por
+# 'onnxruntime-gpu' compatível com a sua versão de CUDA.
+onnxruntime>=1.17

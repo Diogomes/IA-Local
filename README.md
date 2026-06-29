@@ -33,6 +33,8 @@ IA_Local/
 ├── app.py                # Interface web (Gradio): abas "Foto → Vídeo" e "Editar foto"
 ├── photo2video.py        # wrapper CLI foto -> vídeo (Wan2.2)
 ├── photo2photo.py        # edição de foto (roupa/fundo/corpo) mantendo a pessoa
+├── enhance.py            # qualidade: upscale (Real-ESRGAN) + restaurar rosto (GFPGAN)
+├── identity.py           # fidelidade: similaridade facial (InsightFace)
 ├── requirements_cpu.txt  # deps para dev/teste em CPU (sem flash_attn)
 ├── README.md             # este arquivo
 ├── outputs/              # vídeos gerados pela UI
@@ -249,6 +251,37 @@ Na aba **Editar foto**, depois de gerar um resultado você pode:
 
 Assim dá para ir de um retrato simples a um vídeo com a pessoa de corpo inteiro,
 roupa nova e cenário novo, sempre preservando a identidade.
+
+## Qualidade máxima e fidelidade medida (opcional)
+
+Recursos extras, ativáveis na UI ou na CLI. As libs são **opcionais** e carregam
+sob demanda — se faltarem, o app segue funcionando e só pula o recurso. Instale-as
+no PC da GPU com:
+```powershell
+venv_wan\Scripts\python -m pip install -r requirements_enhance.txt
+```
+
+### ✨ Qualidade: upscale + restauração de rosto (`enhance.py`)
+Passo final que **restaura o rosto** (GFPGAN) e **aumenta a resolução**
+(Real-ESRGAN via `spandrel`), tanto para **foto** quanto para **vídeo**:
+- Na aba *Editar foto*: caixa **"✨ Melhorar qualidade"** + fator de upscale (×2/×4).
+- Na aba *Foto → Vídeo*: caixa **"✨ Melhorar qualidade do vídeo"** (processa quadro a quadro).
+- CLI: `photo2photo.py --enhance --scale 2`, ou `python enhance.py -i saida.mp4 --video --scale 2`.
+
+### 🔎 Fidelidade medida: checagem de identidade (`identity.py`)
+Compara o rosto da entrada com o da saída (embedding do **InsightFace**) e, na
+edição, **retenta automaticamente com outra seed** se a pessoa ficar abaixo do
+limiar — e avisa no status a similaridade obtida.
+- UI: caixa **"🔎 Checar identidade"**. CLI: `--check-identity --identity-threshold 0.45 --retries 2`.
+- Direto: `python identity.py -a original.jpg -b editada.png`.
+
+### 🧍 Corpo inteiro de verdade: outpaint com máscara (FLUX Fill)
+Para a tarefa **corpo**, em vez de só pedir "corpo inteiro" por texto, dá para
+**estender a tela e preencher com máscara** usando `FLUX.1-Fill-dev` — resultado
+mais consistente ao recriar o corpo a partir do rosto.
+- UI: na tarefa *Recriar corpo inteiro*, marque **"🧍 outpaint com máscara"**.
+- CLI: `photo2photo.py -i rosto.jpg --task corpo --outpaint -d "jeans e camiseta"`.
+- Requer o modelo `FLUX.1-Fill-dev` (gated no HF: aceite a licença + `hf auth login`).
 
 ## Fidelidade à pessoa (não mudar quem está na foto)
 
