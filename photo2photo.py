@@ -299,6 +299,7 @@ class EditResult:
     identity_ok: bool = True
     attempts: int = 1
     notes: list = field(default_factory=list)
+    steps: list = field(default_factory=list)  # caminhos intermediários (Estúdio)
 
 
 def _step_callback(progress, steps):
@@ -500,6 +501,71 @@ def outpaint_full_body(*, image: str, describe: str = "", model: str = "flux-fil
     return EditResult(path=out, identity_similarity=sim, identity_ok=ok, notes=notes)
 
 
+def studio_transform(*, image: str, model: str = DEFAULT_MODEL,
+                     steps: int | None = None, guidance: float | None = None,
+                     seed: int = 42, device: str | None = None,
+                     quantize: str | None = "4bit", lowvram: bool = False,
+                     progress=None, keep_identity: bool = True,
+                     full_body: bool = False, full_body_desc: str = "",
+                     outpaint: bool = False, roupa: str = "", fundo: str = "",
+                     upscale: int = 1, face_restore: bool = False,
+                     identity_check: bool = False,
+                     identity_threshold: float = 0.45,
+                     output: str | None = None) -> EditResult:
+    """Pipeline de 1 clique: (corpo) -> (roupa) -> (fundo) -> melhorar qualidade.
+
+    Encadeia as etapas pedidas reaproveitando o resultado de uma como entrada da
+    próxima. A melhoria de qualidade é feita só no fim (evita upscales repetidos)
+    e a checagem de identidade compara o resultado final com a foto ORIGINAL.
+    """
+    notes: list = []
+    produced: list = []
+    current = image
+
+    def _run_edit(task: str, desc: str):
+        nonlocal current
+        instr = build_instruction(task, desc, keep_identity=keep_identity)
+        r = edit_photo(image=current, instruction=instr, model=model, steps=steps,
+                       guidance=guidance, seed=seed, device=device, quantize=quantize,
+                       lowvram=lowvram, progress=progress, upscale=1,
+                       face_restore=False, identity_check=False)
+        current = str(r.path)
+        produced.append(current)
+        notes.append(f"{task}: {r.path.name}")
+
+    if full_body:
+        if outpaint:
+            r = outpaint_full_body(image=current, describe=full_body_desc, steps=steps,
+                                   seed=seed, device=device, quantize=quantize,
+                                   lowvram=lowvram, progress=progress, upscale=1,
+                                   face_restore=False)
+            current = str(r.path)
+            produced.append(current)
+            notes.append(f"corpo (outpaint): {r.path.name}")
+        else:
+            _run_edit("corpo", full_body_desc)
+    if (roupa or "").strip():
+        _run_edit("roupa", roupa)
+    if (fundo or "").strip():
+        _run_edit("fundo", fundo)
+
+    # Etapa final: melhorar qualidade (uma vez) e salvar.
+    pil = _load_image(current)
+    final = _finalize(pil, src_image=image, output=output, upscale=upscale,
+                      face_restore=face_restore, device=device, notes=notes)
+
+    sim, ok = (None, True)
+    import identity as idmod
+    if identity_check and idmod.available():
+        sim, ok = idmod.check(image, str(final), identity_threshold)
+        if sim is not None:
+            notes.append(f"identidade final={sim:.3f} ({'ok' if ok else 'baixa'})")
+
+    produced.append(str(final))
+    return EditResult(path=final, identity_similarity=sim, identity_ok=ok,
+                      notes=notes, steps=produced)
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -562,6 +628,13 @@ def main() -> int:
     # Corpo inteiro de verdade
     p.add_argument("--outpaint", action="store_true",
                    help="Tarefa 'corpo': usar outpaint com máscara (FLUX Fill).")
+    # Estúdio: pipeline de 1 clique (corpo -> roupa -> fundo -> qualidade)
+    p.add_argument("--studio", action="store_true",
+                   help="Pipeline completo: encadeia corpo/roupa/fundo + qualidade.")
+    p.add_argument("--full-body", dest="full_body", action="store_true",
+                   help="(studio) Primeiro recria o corpo inteiro a partir do rosto.")
+    p.add_argument("--roupa", default="", help="(studio) Descrição da nova roupa.")
+    p.add_argument("--fundo", default="", help="(studio) Descrição do novo fundo/cenário.")
     p.add_argument("--download-only", action="store_true",
                    help="Só baixa os pesos do modelo escolhido e sai.")
     p.add_argument("--dry-run", action="store_true",
@@ -623,7 +696,18 @@ def main() -> int:
         lowvram=args.lowvram, upscale=scale, face_restore=face_restore,
         identity_check=args.check_identity, identity_threshold=args.identity_threshold)
     try:
-        if args.task == "corpo" and args.outpaint:
+        if args.studio:
+            log("Estúdio: encadeando "
+                + " -> ".join(filter(None, [
+                    "corpo" if args.full_body else "",
+                    "roupa" if args.roupa else "",
+                    "fundo" if args.fundo else "",
+                    "qualidade" if args.enhance else ""])) or "(só qualidade)")
+            res = studio_transform(
+                keep_identity=keep_identity, full_body=args.full_body,
+                full_body_desc=args.describe, outpaint=args.outpaint,
+                roupa=args.roupa, fundo=args.fundo, **common)
+        elif args.task == "corpo" and args.outpaint:
             model_fill = args.model if MODELS[args.model].pipeline == "FluxFillPipeline" else "flux-fill"
             common["model"] = model_fill
             log(f"Outpaint com máscara usando {model_fill}.")

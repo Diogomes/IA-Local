@@ -30,7 +30,7 @@ aqui só tem GPU Intel integrada (sem CUDA) — nela o `photo2video.py` roda em 
 
 ```
 IA_Local/
-├── app.py                # Interface web (Gradio): abas "Foto → Vídeo" e "Editar foto"
+├── app.py                # UI (Gradio): abas "Foto → Vídeo", "Editar foto" e "Estúdio"
 ├── photo2video.py        # wrapper CLI foto -> vídeo (Wan2.2)
 ├── photo2photo.py        # edição de foto (roupa/fundo/corpo) mantendo a pessoa
 ├── enhance.py            # qualidade: upscale (Real-ESRGAN) + restaurar rosto (GFPGAN)
@@ -251,6 +251,26 @@ Na aba **Editar foto**, depois de gerar um resultado você pode:
 
 Assim dá para ir de um retrato simples a um vídeo com a pessoa de corpo inteiro,
 roupa nova e cenário novo, sempre preservando a identidade.
+
+## Estúdio: transformação completa em 1 clique
+
+A aba **"✨ Estúdio"** encadeia tudo numa tacada só, preservando a pessoa:
+
+```
+recriar corpo inteiro  →  trocar roupa  →  trocar fundo  →  melhorar qualidade
+```
+
+Preencha **só o que quiser mudar** (campos vazios são pulados); o resultado de
+cada etapa vira a entrada da próxima. A melhoria de qualidade roda **uma vez no
+fim** e a checagem de identidade compara o resultado final com a foto original.
+A **galeria** mostra cada etapa, e dá para mandar o resultado direto para a aba
+de vídeo com **"🎬 Animar este resultado"**.
+
+CLI equivalente:
+```powershell
+venv_wan\Scripts\python photo2photo.py -i rosto.jpg --studio --full-body ^
+  --roupa "terno social" --fundo "escritório moderno" --enhance --check-identity
+```
 
 ## Qualidade máxima e fidelidade medida (opcional)
 
