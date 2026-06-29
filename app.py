@@ -287,6 +287,51 @@ def estudio(imagem_path, fullbody, fb_desc, outpaint, roupa, fundo, keep,
     yield str(res.path), res.steps, f"✅ Pronto! Salvo em {res.path.name}.\n{extra}{aviso}"
 
 
+LOTE_TASK_LABELS = {
+    "👗 Trocar roupa": "roupa",
+    "🏞️ Trocar fundo / cenário": "fundo",
+    "✏️ Livre (cada linha = uma instrução)": "livre",
+}
+
+
+def lote(imagem_path, task_label, itens_texto, keep, modelo_label, passos, guidance,
+         seed, lowvram, melhorar, escala, checkid, progress=gr.Progress()):
+    if not imagem_path:
+        yield None, "⚠️ Envie uma foto primeiro."
+        return
+    if not CUDA:
+        yield None, ("⚠️ O lote usa modelos de 12–20B e só roda na GPU "
+                     "(RTX 5070 Ti). Rode o app no PC com a GPU.")
+        return
+    itens = [ln.strip() for ln in (itens_texto or "").splitlines() if ln.strip()]
+    if not itens:
+        yield None, "⚠️ Escreva ao menos um item (um por linha)."
+        return
+
+    task = LOTE_TASK_LABELS.get(task_label, "roupa")
+    model = EDIT_MODEL_LABELS.get(modelo_label, p2p.DEFAULT_MODEL)
+    yield None, (f"⏳ Gerando {len(itens)} resultados de '{task}' (a 1ª vez baixa o "
+                 "modelo). Mesma seed em todos — só o texto muda.")
+    try:
+        res = p2p.batch_edit(
+            image=imagem_path, task=task, items=itens, model=model,
+            steps=int(passos) or None, guidance=float(guidance), seed=int(seed),
+            keep_identity=bool(keep), device="cuda", quantize="4bit",
+            lowvram=bool(lowvram), progress=progress,
+            upscale=int(escala) if melhorar else 1, face_restore=bool(melhorar),
+            identity_check=bool(checkid))
+    except Exception as e:
+        yield None, (f"❌ Falhou: {e}\nDicas: marque 'Low-VRAM' se for OOM.")
+        return
+
+    galeria = []
+    for desc, r in res:
+        cap = desc + (f" • id {r.identity_similarity:.2f}"
+                      if r.identity_similarity is not None else "")
+        galeria.append((str(r.path), cap))
+    yield galeria, f"✅ {len(galeria)} resultados. Clique para ampliar; salvos em outputs/."
+
+
 _GPU_TXT = ("**Dispositivo: GPU (CUDA) ✅** — pode usar 540p/720p e 40-50 passos."
             if CUDA else
             "**Dispositivo: CPU (lento) ⚠️** — use os presets de *teste*. "
@@ -639,6 +684,51 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
                                    st_guidance, st_seed, st_lowvram, st_melhorar,
                                    st_escala, st_checkid],
                            outputs=[st_saida, st_gallery, st_status], api_name="estudio")
+
+        # ---------------- Aba 4: Lote (vários looks/cenários) ----------------
+        with gr.Tab("🗂️ Lote (vários looks/cenários)", id="lote"):
+            gr.Markdown(
+                "> 🗂️ Aplica a **mesma** tarefa a **vários textos de uma vez** "
+                "(um por linha) na mesma foto — ótimo para comparar looks ou "
+                "cenários. Mesma pessoa, mesma seed; só o texto muda.\n"
+                "> **Precisa de GPU.**", elem_classes=["notice"])
+            with gr.Row():
+                with gr.Column(scale=1, elem_classes=["work-panel"]):
+                    lo_imagem = gr.Image(type="filepath", label="Foto de entrada", height=260)
+                    lo_task = gr.Radio(choices=list(LOTE_TASK_LABELS),
+                                       value=list(LOTE_TASK_LABELS)[0], label="O que variar")
+                    lo_itens = gr.Textbox(
+                        label="Itens — um por linha", lines=6,
+                        placeholder="biquíni de praia vermelho\nterno social preto\n"
+                                    "vestido de verão floral\njaqueta de couro")
+                    lo_keep = gr.Checkbox(value=True, label="🎯 Preservar a pessoa")
+
+                    with gr.Accordion("Ajustes avançados", open=False):
+                        lo_model = gr.Dropdown(choices=list(EDIT_MODEL_LABELS),
+                                               value=list(EDIT_MODEL_LABELS)[0], label="Modelo")
+                        lo_steps = gr.Slider(10, 60, value=p2p.MODELS[p2p.DEFAULT_MODEL].default_steps,
+                                             step=1, label="Passos")
+                        lo_guidance = gr.Slider(1.0, 10.0,
+                                                value=p2p.MODELS[p2p.DEFAULT_MODEL].default_guidance,
+                                                step=0.5, label="Aderência")
+                        lo_seed = gr.Number(value=42, label="Seed (igual p/ todos)", precision=0)
+                        lo_lowvram = gr.Checkbox(value=False, label="Low-VRAM")
+                        lo_melhorar = gr.Checkbox(value=False,
+                                                  label="✨ Melhorar qualidade (mais lento por item)")
+                        lo_escala = gr.Radio(choices=[1, 2, 4], value=2, label="Upscale (×)")
+                        lo_checkid = gr.Checkbox(value=True, label="🔎 Mostrar identidade de cada um")
+
+                    lo_botao = gr.Button("🗂️ Gerar lote", variant="primary")
+
+                with gr.Column(scale=1, elem_classes=["work-panel"]):
+                    lo_gallery = gr.Gallery(label="Resultados", columns=3, height=420)
+                    lo_status = gr.Textbox(label="Status", interactive=False, lines=4)
+
+            lo_botao.click(lote,
+                           inputs=[lo_imagem, lo_task, lo_itens, lo_keep, lo_model,
+                                   lo_steps, lo_guidance, lo_seed, lo_lowvram,
+                                   lo_melhorar, lo_escala, lo_checkid],
+                           outputs=[lo_gallery, lo_status], api_name="lote")
 
     # --- Fluxo entre abas: editar -> animar / encadear edições ---
     def _enviar_para_video(edited_path):
