@@ -30,8 +30,9 @@ aqui só tem GPU Intel integrada (sem CUDA) — nela o `photo2video.py` roda em 
 
 ```
 IA_Local/
-├── app.py                # Interface web (Gradio): foto + prompt -> vídeo
-├── photo2video.py        # wrapper CLI (usado pela UI e direto no terminal)
+├── app.py                # Interface web (Gradio): abas "Foto → Vídeo" e "Editar foto"
+├── photo2video.py        # wrapper CLI foto -> vídeo (Wan2.2)
+├── photo2photo.py        # edição de foto (roupa/fundo/corpo) mantendo a pessoa
 ├── requirements_cpu.txt  # deps para dev/teste em CPU (sem flash_attn)
 ├── README.md             # este arquivo
 ├── outputs/              # vídeos gerados pela UI
@@ -198,6 +199,44 @@ venv_wan\Scripts\python photo2video.py -i foto.jpg -p "a pessoa vira a cabeça e
 
 Referência de tempo: numa GPU desta classe, ~5s a 720p (50 passos) leva
 poucos minutos (a primeira geração é mais lenta porque carrega os modelos).
+
+## Editar foto: trocar roupa / fundo / corpo (`photo2photo`)
+
+Além de gerar vídeo, a ferramenta edita uma foto **mantendo a mesma pessoa**,
+usando modelos de edição por instrução abertos e gratuitos (via 🤗 diffusers):
+
+| Tarefa | O que faz |
+|--------|-----------|
+| 👗 **Trocar roupa** | Troca o look (inclui **roupa de praia/biquíni**, social, casual) sem mexer no rosto/fundo |
+| 🏞️ **Trocar fundo/cenário** | Coloca a pessoa em outro local (praia, escritório, rua…) preservando-a |
+| 🧍 **Recriar corpo inteiro** | A partir de um retrato **só do rosto**, gera a pessoa de corpo inteiro |
+| 🧥 **Try-on** | Veste a pessoa com uma peça de uma **2ª foto** de referência |
+
+### Modelos (escolha na aba ou via `--model`)
+
+| Modelo | Repo HF | Licença | Nota |
+|--------|---------|---------|------|
+| `qwen-edit` *(default)* | `Qwen/Qwen-Image-Edit-2509` | Apache-2.0, **sem gate** | ~20B → em 16GB use `--quantize 4bit` (default) |
+| `flux-kontext` | `black-forest-labs/FLUX.1-Kontext-dev` | Não-comercial, **gated** | ~12B; aceite a licença no HF e rode `hf auth login` |
+
+### Uso
+
+Na UI: aba **"🖼️ Editar foto"** → envie a foto, escolha a tarefa, descreva a
+mudança e clique em **Editar foto** (a 1ª vez baixa o modelo, vários GB).
+
+Pela CLI (no PC com GPU):
+```powershell
+venv_wan\Scripts\python photo2photo.py -i foto.jpg --task roupa -d "biquíni de praia azul" -o saida.png
+venv_wan\Scripts\python photo2photo.py -i rosto.jpg --task corpo -d "em pé, jeans e camiseta branca"
+venv_wan\Scripts\python photo2photo.py -i pessoa.jpg --ref camisa.jpg --task tryon
+```
+
+O `--quantize 4bit` (padrão) faz o editor caber em 16GB; se faltar VRAM, some
+`--lowvram` (offload sequencial, mais lento). Sem GPU, roda só em `--dry-run`.
+
+> ⚖️ **Uso responsável:** edite fotos suas ou de pessoas que consentiram (moda,
+> try-on, restauração). A ferramenta **não** se destina a criar imagens
+> sexuais/íntimas de pessoas reais sem consentimento.
 
 ## Fidelidade à pessoa (não mudar quem está na foto)
 

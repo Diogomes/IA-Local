@@ -14,7 +14,8 @@
 # roda bem em CUDA). Se estiver no Linux/WSL e quiser o máximo de desempenho:
 #   pip install flash-attn --no-build-isolation
 opencv-python>=4.9.0.80
-diffusers>=0.31.0
+# diffusers >=0.35 traz as pipelines de edição (QwenImageEdit*, FluxKontext).
+diffusers>=0.35.0
 transformers>=4.49.0,<=4.51.3
 tokenizers>=0.20.3
 accelerate>=1.1.1
@@ -32,3 +33,10 @@ librosa
 peft
 # Interface web:
 gradio>=4.0
+# Edição de foto (photo2photo): tokenizer do Qwen-Image-Edit + quantização 4-bit.
+sentencepiece
+protobuf
+Pillow>=10.0
+huggingface_hub>=0.25
+# bitsandbytes: quantização 4-bit p/ caber o editor em 16GB (tem wheel p/ Windows).
+bitsandbytes>=0.43.0
