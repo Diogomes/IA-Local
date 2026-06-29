@@ -288,6 +288,12 @@ Passo final que **restaura o rosto** (GFPGAN) e **aumenta a resolução**
 - Na aba *Foto → Vídeo*: caixa **"✨ Melhorar qualidade do vídeo"** (processa quadro a quadro).
 - CLI: `photo2photo.py --enhance --scale 2`, ou `python enhance.py -i saida.mp4 --video --scale 2`.
 
+### 🎲 Variações: gere várias e escolha a melhor
+Na aba *Editar foto*, o slider **"Variações"** gera N resultados com seeds
+diferentes e os mostra numa **galeria ordenada da mais fiel para a menos** (pela
+similaridade de identidade). Clique numa miniatura para promovê-la a resultado
+principal (e então "Animar"/"Usar como nova entrada"). CLI: `--variations 4`.
+
 ### 🔎 Fidelidade medida: checagem de identidade (`identity.py`)
 Compara o rosto da entrada com o da saída (embedding do **InsightFace**) e, na
 edição, **retenta automaticamente com outra seed** se a pessoa ficar abaixo do

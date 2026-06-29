@@ -173,16 +173,28 @@ EDIT_MODEL_LABELS = {
 }
 
 
+def _galeria_de_variantes(variants):
+    """Lista (caminho, legenda com a similaridade) p/ a galeria, melhor primeiro."""
+    itens = []
+    for i, v in enumerate(variants):
+        if v.identity_similarity is not None:
+            cap = f"#{i + 1} • id {v.identity_similarity:.2f}"
+        else:
+            cap = f"#{i + 1}"
+        itens.append((str(v.path), cap))
+    return itens
+
+
 def editar(imagem_path, ref_path, task_label, descricao, manter_pessoa,
            modelo_label, passos, guidance, seed, negativo, lowvram,
-           melhorar, escala, checar_id, outpaint, progress=gr.Progress()):
+           melhorar, escala, checar_id, outpaint, n_var, progress=gr.Progress()):
     if not imagem_path:
-        yield None, "⚠️ Envie uma foto primeiro."
+        yield None, None, "⚠️ Envie uma foto primeiro."
         return
     if not CUDA:
-        yield None, ("⚠️ A edição usa modelos de 12–20B e só roda na GPU "
-                     "(RTX 5070 Ti). Nesta máquina (CPU) é inviável. Rode o app "
-                     "no PC com a GPU.")
+        yield None, None, ("⚠️ A edição usa modelos de 12–20B e só roda na GPU "
+                           "(RTX 5070 Ti). Nesta máquina (CPU) é inviável. Rode o "
+                           "app no PC com a GPU.")
         return
 
     task = EDIT_TASK_LABELS.get(task_label, p2p.TASK_DEFAULT)
@@ -190,19 +202,34 @@ def editar(imagem_path, ref_path, task_label, descricao, manter_pessoa,
     instruction = p2p.build_instruction(task, descricao, keep_identity=bool(manter_pessoa))
     ref = ref_path if (task == "tryon" or ref_path) else None
     usar_outpaint = bool(outpaint) and task == "corpo"
+    n_var = max(1, int(n_var))
     quality = dict(upscale=int(escala) if melhorar else 1,
                    face_restore=bool(melhorar), identity_check=bool(checar_id))
 
-    yield None, (f"⏳ Carregando o modelo (a 1ª vez baixa vários GB e demora). "
-                 "Edição em 4-bit p/ caber em 16GB…\n"
-                 + ("🧍 Outpaint com máscara (FLUX Fill).\n" if usar_outpaint else "")
-                 + f"Instrução: {instruction}")
+    yield None, None, (f"⏳ Carregando o modelo (a 1ª vez baixa vários GB e demora). "
+                       "Edição em 4-bit p/ caber em 16GB…\n"
+                       + ("🧍 Outpaint com máscara (FLUX Fill).\n" if usar_outpaint else "")
+                       + (f"🎲 Gerando {n_var} variações.\n" if (n_var > 1 and not usar_outpaint) else "")
+                       + f"Instrução: {instruction}")
     try:
         if usar_outpaint:
             res = p2p.outpaint_full_body(
                 image=imagem_path, describe=descricao, seed=int(seed),
                 steps=int(passos) or None, device="cuda", quantize="4bit",
                 lowvram=bool(lowvram), progress=progress, **quality)
+        elif n_var > 1:
+            variants = p2p.generate_variations(
+                image=imagem_path, instruction=instruction, model=model, n=n_var,
+                reference=ref, steps=int(passos) or None, guidance=float(guidance),
+                seed=int(seed), negative=(negativo or "").strip() or None,
+                device="cuda", quantize="4bit", lowvram=bool(lowvram),
+                progress=progress, **quality)
+            best = variants[0]
+            extra = ("\n" + "\n".join(best.notes)) if best.notes else ""
+            yield (str(best.path), _galeria_de_variantes(variants),
+                   f"✅ {len(variants)} variações (melhor 1ª, por identidade). "
+                   f"Melhor: {best.path.name}.{extra}")
+            return
         else:
             res = p2p.edit_photo(
                 image=imagem_path, instruction=instruction, model=model, reference=ref,
@@ -210,14 +237,14 @@ def editar(imagem_path, ref_path, task_label, descricao, manter_pessoa,
                 negative=(negativo or "").strip() or None, device="cuda",
                 quantize="4bit", lowvram=bool(lowvram), progress=progress, **quality)
     except Exception as e:
-        yield None, (f"❌ Falhou: {e}\nDicas: marque 'Low-VRAM' se for OOM; para "
-                     "FLUX Fill/Kontext aceite a licença no HF e rode `hf auth login`.")
+        yield None, None, (f"❌ Falhou: {e}\nDicas: marque 'Low-VRAM' se for OOM; para "
+                           "FLUX Fill/Kontext aceite a licença no HF e rode `hf auth login`.")
         return
 
     extra = ("\n" + "\n".join(res.notes)) if res.notes else ""
     aviso = ("\n⚠️ A identidade pode ter mudado — tente outra seed."
              if (res.identity_similarity is not None and not res.identity_ok) else "")
-    yield str(res.path), f"✅ Pronto! Salvo em {res.path.name}.{extra}{aviso}"
+    yield str(res.path), [str(res.path)], f"✅ Pronto! Salvo em {res.path.name}.{extra}{aviso}"
 
 
 def estudio(imagem_path, fullbody, fb_desc, outpaint, roupa, fundo, keep,
@@ -527,11 +554,14 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
                                                  label="🔎 Checar identidade (retenta se a pessoa mudar)")
                         ed_outpaint = gr.Checkbox(value=False,
                                                   label="🧍 Corpo: outpaint com máscara (FLUX Fill, mais consistente)")
+                        ed_var = gr.Slider(1, 6, value=1, step=1,
+                                           label="🎲 Variações (gera N e ordena pela fidelidade)")
 
                     ed_botao = gr.Button("🖼️ Editar foto", variant="primary")
 
                 with gr.Column(scale=1, elem_classes=["work-panel"]):
-                    ed_saida = gr.Image(type="filepath", label="Resultado", height=360)
+                    ed_saida = gr.Image(type="filepath", label="Resultado (melhor)", height=320)
+                    ed_gallery = gr.Gallery(label="Variações (melhor → pior)", columns=3, height=160)
                     ed_status = gr.Textbox(label="Status", interactive=False, lines=6)
                     with gr.Row():
                         ed_to_video = gr.Button("🎬 Animar este resultado")
@@ -546,8 +576,16 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
             ed_botao.click(editar,
                            inputs=[ed_imagem, ed_ref, ed_task, ed_desc, ed_keep,
                                    ed_model, ed_steps, ed_guidance, ed_seed, ed_neg, ed_lowvram,
-                                   ed_melhorar, ed_escala, ed_checkid, ed_outpaint],
-                           outputs=[ed_saida, ed_status], api_name="editar")
+                                   ed_melhorar, ed_escala, ed_checkid, ed_outpaint, ed_var],
+                           outputs=[ed_saida, ed_gallery, ed_status], api_name="editar")
+
+            # Clicar numa variação da galeria a promove para o "Resultado (melhor)".
+            def _escolher_variante(evt: gr.SelectData):
+                try:
+                    return evt.value.get("image", {}).get("path") or evt.value
+                except Exception:
+                    return gr.update()
+            ed_gallery.select(_escolher_variante, inputs=None, outputs=ed_saida, api_name=False)
 
         # ---------------- Aba 3: Estúdio (1 clique) ----------------
         with gr.Tab("✨ Estúdio (transformação completa)", id="estudio"):
