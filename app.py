@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """Interface web (Gradio) do photo2video — foto + prompt -> vídeo com Wan2.2.
 
-Envie uma foto, escreva um prompt e gere um vídeo curto. A fidelidade à pessoa
-vem do próprio I2V do Wan (usa a foto como quadro inicial).
+Envie uma foto, escreva um prompt e gere um vídeo curto e realista. A fidelidade
+à pessoa vem do I2V do Wan (a foto vira o quadro inicial) + um reforço de
+identidade nos prompts (positivo e negativo) que esta UI adiciona por padrão.
 
-QUALIDADE: o ti2v-5B foi treinado em 720p com ~40-50 passos. Resoluções baixas
-(256/384) e poucos passos servem só para TESTAR o pipeline — o resultado fica
-borrado/"flashes". Para um vídeo de verdade use 512px+ e 30+ passos (lento na
-CPU; rápido numa GPU).
+QUALIDADE: o ti2v-5B foi treinado em 720p com ~50 passos. Numa GPU NVIDIA
+(ex.: RTX 5070 Ti 16GB) use 540p/720p e 40-50 passos para qualidade alta.
+Resoluções baixas (256/384/512) servem só para TESTAR o pipeline na CPU.
 
 Cada geração chama o generate.py oficial como UM subprocesso, então a memória
-(T5 ~11GB + DiT ~10GB) é toda liberada ao terminar.
+(T5 + DiT) é toda liberada ao terminar.
 
-Rodar:  venv_wan/bin/python app.py     (abre em http://127.0.0.1:7860)
+Rodar:  venv_wan/bin/python app.py          (Linux/macOS)
+        venv_wan\\Scripts\\python app.py     (Windows)
+        -> abre em http://127.0.0.1:7860
 """
 
 from __future__ import annotations
@@ -32,22 +34,33 @@ OUTPUTS.mkdir(exist_ok=True)
 
 CUDA = has_cuda()
 
-# Rótulo amigável -> valor de --size. Áreas pequenas = só teste; 720p = qualidade.
+# Rótulo amigável -> valor de --size.
+#  - 720p/540p/480p = qualidade real (GPU).
+#  - 256/384/512    = só teste do pipeline (CPU).
 RESOLUCOES = {
-    "256px — só teste (qualidade ruim)": "256*256",
-    "384px — teste melhor (ainda fraco)": "384*384",
-    "512px — qualidade ok (lento em CPU)": "512*512",
-    "720p — qualidade boa (ideal em GPU)": "1280*704",
+    "720p — máxima qualidade (1280×704, GPU)": "1280*704",
+    "540p — alta qualidade, mais leve (960×544, GPU)": "960*544",
+    "480p — boa qualidade, mais rápido (832×480, GPU)": "832*480",
+    "512px — teste (qualidade fraca)": "512*512",
+    "384px — teste (fraco)": "384*384",
+    "256px — teste rápido (CPU)": "256*256",
 }
 
 # preset -> (resolução, passos, duração s, guidance)
-PRESETS = {
-    "Teste rápido (CPU)": ("256px — só teste (qualidade ruim)", 8, 2.0, 5.0),
-    "Qualidade média": ("512px — qualidade ok (lento em CPU)", 30, 3.0, 5.0),
-    "Alta qualidade (GPU)": ("720p — qualidade boa (ideal em GPU)", 40, 5.0, 5.0),
+PRESETS_GPU = {
+    "Máxima qualidade (GPU)": ("720p — máxima qualidade (1280×704, GPU)", 50, 5.0, 5.0),
+    "Alta qualidade, mais rápida (GPU)": ("540p — alta qualidade, mais leve (960×544, GPU)", 40, 5.0, 5.0),
+    "Equilíbrio (GPU)": ("480p — boa qualidade, mais rápido (832×480, GPU)", 30, 4.0, 5.0),
 }
+PRESETS_CPU = {
+    "Teste rápido (CPU)": ("256px — teste rápido (CPU)", 8, 2.0, 5.0),
+    "Teste melhor (CPU)": ("512px — teste (qualidade fraca)", 20, 3.0, 5.0),
+}
+PRESETS = {**PRESETS_GPU, **PRESETS_CPU} if CUDA else {**PRESETS_CPU, **PRESETS_GPU}
+PRESET_DEFAULT = "Máxima qualidade (GPU)" if CUDA else "Teste rápido (CPU)"
 
-PROMPT_EXEMPLO = "a pessoa sorri suavemente e acena para a câmera, luz natural, movimento sutil, alta qualidade"
+PROMPT_EXEMPLO = ("a pessoa sorri suavemente e acena para a câmera, luz natural, "
+                  "movimento sutil e realista, alta qualidade")
 
 
 def frames_para_duracao(segundos: float) -> int:
@@ -65,7 +78,7 @@ def aplicar_preset(preset: str):
 
 
 def gerar(imagem_path, prompt, resolucao_label, passos, duracao, guidance,
-          progress=gr.Progress()):
+          manter_pessoa, negativo_extra, progress=gr.Progress()):
     if not imagem_path:
         yield None, "⚠️ Envie uma foto primeiro."
         return
@@ -76,17 +89,19 @@ def gerar(imagem_path, prompt, resolucao_label, passos, duracao, guidance,
     size = RESOLUCOES.get(resolucao_label, "256*256")
     frames = frames_para_duracao(float(duracao))
     saida = OUTPUTS / f"video_{uuid.uuid4().hex[:8]}.mp4"
-    # Para resoluções baixas o próprio Wan recomenda shift=3.0.
+    # Em resoluções pequenas o Wan recomenda shift=3.0; em 480p+ usa 5.0.
     w, h = (int(x) for x in size.split("*"))
-    shift = 3.0 if w * h <= 480 * 480 else 5.0
+    shift = 3.0 if w * h <= 512 * 512 else 5.0
 
     cmd, _ = generation_command(
         image=imagem_path, prompt=prompt.strip(), size=size, frame_num=frames,
         steps=int(passos), output=saida, guide_scale=float(guidance),
-        shift=shift, cuda=CUDA)
+        shift=shift, cuda=CUDA, keep_identity=bool(manter_pessoa),
+        negative_prompt=(negativo_extra or "").strip() or None)
 
     yield None, (f"⏳ Iniciando… {size}, {frames} frames (~{frames/FPS_DEFAULT:.1f}s), "
-                 f"{int(passos)} passos.\n"
+                 f"{int(passos)} passos, guidance {guidance}.\n"
+                 + ("🎯 Preservação da pessoa: LIGADA.\n" if manter_pessoa else "")
                  + ("" if CUDA else "Em CPU é LENTO: carregar o modelo já leva ~1 min "
                     "e cada passo demora; resoluções altas podem levar horas."))
 
@@ -95,8 +110,12 @@ def gerar(imagem_path, prompt, resolucao_label, passos, duracao, guidance,
         text=True, bufsize=1, cwd=str(WAN_REPO))
 
     fase_difusao = False
+    ultima_erro = ""
     passo_re = re.compile(r"(\d+)/(\d+)\s*\[")
     for linha in proc.stdout:
+        linha = linha.rstrip()
+        if "out of memory" in linha.lower() or "OutOfMemory" in linha:
+            ultima_erro = linha
         if "Creating WanModel" in linha or "loading" in linha.lower():
             yield None, "📦 Carregando o modelo na memória…"
         elif "Generating video" in linha:
@@ -115,56 +134,74 @@ def gerar(imagem_path, prompt, resolucao_label, passos, duracao, guidance,
     proc.wait()
     if saida.exists() and saida.stat().st_size > 0:
         yield str(saida), f"✅ Pronto! Vídeo de ~{frames/FPS_DEFAULT:.1f}s ({size})."
+    elif ultima_erro:
+        yield None, ("❌ Falta de memória de GPU (OOM). Tente: resolução menor "
+                     "(540p ou 480p), menos frames (duração menor) ou menos passos. "
+                     "Em 16GB, 720p com 5s pode estourar — 540p costuma caber folgado.\n"
+                     f"Detalhe: {ultima_erro}")
     else:
-        yield None, ("❌ A geração falhou (código %s). Em CPU a causa mais comum é "
-                     "falta de memória (OOM). Tente resolução/passos/duração menores, "
-                     "ou rode numa máquina com GPU." % proc.returncode)
+        yield None, ("❌ A geração falhou (código %s). Veja o terminal para o log. "
+                     "Causas comuns: checkpoint não baixado, PyTorch sem suporte à "
+                     "GPU (Blackwell exige cu128) ou falta de memória." % proc.returncode)
 
+
+_GPU_TXT = ("**Dispositivo: GPU (CUDA) ✅** — pode usar 540p/720p e 40-50 passos."
+            if CUDA else
+            "**Dispositivo: CPU (lento) ⚠️** — use os presets de *teste*. "
+            "Qualidade real (540p/720p) só numa GPU NVIDIA.")
 
 AVISO_QUALIDADE = (
-    "> ⚠️ **Qualidade x velocidade:** o modelo foi treinado em **720p com ~40 passos**. "
-    "Resoluções baixas (256/384) e poucos passos servem só para *testar* — saem "
-    "borradas/'flashes de luz'. Para um vídeo nítido e fiel ao prompt use **512px+ e "
-    "30+ passos**. Na CPU isso é lento (pode levar horas); numa **GPU** sai em minutos.")
+    "> 🎯 **Fidelidade à pessoa:** a foto vira o **quadro inicial** e esta UI ainda "
+    "adiciona um reforço de identidade nos prompts. Mantenha **\"Preservar a pessoa\"** "
+    "ligado e descreva no prompt **só o movimento/cena**, não as feições.\n"
+    ">\n"
+    "> 🎬 **Qualidade x velocidade:** o modelo foi treinado em **720p, ~50 passos**. "
+    "Para vídeo nítido e realista use **540p/720p e 40-50 passos** (numa GPU sai em "
+    "minutos). Resoluções 256/384/512 servem só para *testar* o pipeline.")
 
 
 with gr.Blocks(title="photo2video — Wan2.2") as demo:
     gr.Markdown(
-        "# 🎞️ photo2video — foto → vídeo (Wan2.2)\n"
-        "Envie uma **foto**, escreva um **prompt** e gere um vídeo curto. "
-        "A aparência da(s) pessoa(s) é preservada porque a foto vira o quadro "
-        f"inicial. **Dispositivo detectado: {'GPU (CUDA) ✅' if CUDA else 'CPU (lento) ⚠️'}**")
+        "# 🎞️ photo2video — foto → vídeo realista (Wan2.2)\n"
+        "Envie uma **foto**, escreva um **prompt** com o movimento/cena desejado e "
+        "gere um vídeo curto. A pessoa da foto é **preservada**.\n\n" + _GPU_TXT)
     gr.Markdown(AVISO_QUALIDADE)
 
     with gr.Row():
         with gr.Column(scale=1):
             imagem = gr.Image(type="filepath", label="Foto de entrada", height=300)
-            prompt = gr.Textbox(label="Prompt", lines=3,
+            prompt = gr.Textbox(label="Prompt (o que deve acontecer no vídeo)", lines=3,
                                 placeholder=PROMPT_EXEMPLO, value=PROMPT_EXEMPLO)
+            manter_pessoa = gr.Checkbox(
+                value=True, label="🎯 Preservar a pessoa (rosto/identidade) — recomendado")
             preset = gr.Radio(choices=list(PRESETS) + ["Personalizado"],
-                              value="Teste rápido (CPU)", label="Preset")
+                              value=PRESET_DEFAULT, label="Preset")
 
             with gr.Accordion("Ajustes avançados", open=False):
                 resolucao = gr.Dropdown(choices=list(RESOLUCOES),
-                                        value=PRESETS["Teste rápido (CPU)"][0],
+                                        value=PRESETS[PRESET_DEFAULT][0],
                                         label="Resolução")
-                passos = gr.Slider(4, 60, value=8, step=1,
+                passos = gr.Slider(4, 60, value=PRESETS[PRESET_DEFAULT][1], step=1,
                                    label="Passos de difusão (↑ = melhor e mais lento)")
-                duracao = gr.Slider(1.0, 10.0, value=2.0, step=0.5,
-                                    label="Duração (segundos)")
-                guidance = gr.Slider(1.0, 12.0, value=5.0, step=0.5,
-                                     label="Guidance (aderência ao prompt)")
+                duracao = gr.Slider(1.0, 10.0, value=PRESETS[PRESET_DEFAULT][2], step=0.5,
+                                    label="Duração (segundos) — ideal ≤5s")
+                guidance = gr.Slider(1.0, 12.0, value=PRESETS[PRESET_DEFAULT][3], step=0.5,
+                                     label="Guidance (aderência ao prompt; ~5 é o ideal)")
+                negativo_extra = gr.Textbox(
+                    label="Prompt negativo extra (o que evitar — opcional)", lines=2,
+                    placeholder="ex.: fundo cheio de gente, texto na tela, cores saturadas")
 
             botao = gr.Button("🎬 Gerar vídeo", variant="primary")
 
         with gr.Column(scale=1):
             video = gr.Video(label="Resultado", height=360)
-            status = gr.Textbox(label="Status", interactive=False, lines=5)
+            status = gr.Textbox(label="Status", interactive=False, lines=6)
 
     preset.change(aplicar_preset, inputs=preset,
                   outputs=[resolucao, passos, duracao, guidance], api_name=False)
     botao.click(gerar,
-                inputs=[imagem, prompt, resolucao, passos, duracao, guidance],
+                inputs=[imagem, prompt, resolucao, passos, duracao, guidance,
+                        manter_pessoa, negativo_extra],
                 outputs=[video, status], api_name="gerar")
 
 

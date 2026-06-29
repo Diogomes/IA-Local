@@ -56,7 +56,7 @@ MODELS: dict[str, ModelSpec] = {
         t5_cpu=True,
         fps=24,
         default_frames=121,
-        approx_vram="~8-10GB em FP8, 24GB+ recomendado (FP16 ~27GB)",
+        approx_vram="~12-16GB com --offload_model (bf16). 720p cabe numa RTX 5070 Ti 16GB.",
     ),
     "i2v-A14B": ModelSpec(
         task="i2v-A14B",
@@ -72,6 +72,51 @@ MODELS: dict[str, ModelSpec] = {
 
 DEFAULT_MODEL = "ti2v-5B"  # o mais leve; melhor default sem GPU enorme
 FPS_DEFAULT = MODELS[DEFAULT_MODEL].fps  # usado pela interface web
+
+# ---------------------------------------------------------------------------
+# Fidelidade à pessoa / realismo (prompts)
+# ---------------------------------------------------------------------------
+# Prompt negativo PADRÃO do Wan2.2 (em chinês — é com ele que o modelo foi
+# treinado). Mantemos como base e adicionamos termos extras de fidelidade.
+WAN_DEFAULT_NEG = (
+    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，"
+    "整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，"
+    "画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，"
+    "静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+)
+
+# Termos que reforçam NÃO trocar/distorcer a pessoa nem inventar outra cara.
+IDENTITY_NEGATIVE_TERMS = (
+    "rosto diferente, outra pessoa, troca de identidade, traços faciais alterados, "
+    "deformação do rosto, distorção facial, morphing, rosto borrado, "
+    "feições inconsistentes, pessoa diferente, identidade trocada, "
+    "cara distorcida, olhos distorcidos, beauty filter exagerado, pele plástica, "
+    "different face, identity change, face morph, disfigured face"
+)
+
+# Sufixo adicionado ao prompt POSITIVO para travar a identidade ao quadro inicial.
+IDENTITY_POSITIVE_SUFFIX = (
+    "mantendo exatamente a mesma pessoa da foto, mesmo rosto e mesmos traços "
+    "faciais, identidade preservada, fotorrealista, alta fidelidade"
+)
+
+
+def build_negative_prompt(extra: str | None = None, keep_identity: bool = True) -> str:
+    """Monta o prompt negativo: base do modelo + (identidade) + (extra do usuário)."""
+    parts = [WAN_DEFAULT_NEG]
+    if keep_identity:
+        parts.append(IDENTITY_NEGATIVE_TERMS)
+    if extra and extra.strip():
+        parts.append(extra.strip())
+    return ", ".join(parts)
+
+
+def build_positive_prompt(prompt: str, keep_identity: bool = True) -> str:
+    """Acrescenta ao prompt do usuário o reforço de preservação da pessoa."""
+    prompt = prompt.strip()
+    if keep_identity and IDENTITY_POSITIVE_SUFFIX not in prompt:
+        return f"{prompt}, {IDENTITY_POSITIVE_SUFFIX}"
+    return prompt
 
 # Faixa de duração aceita (segundos) e o ponto "confortável" dos modelos.
 MIN_DURATION = 3.0
@@ -132,23 +177,30 @@ def download_checkpoint(spec: ModelSpec, ckpt_dir: Path) -> bool:
 
 def generation_command(*, image, prompt, size, frame_num, steps, output,
                        seed=42, guide_scale=None, shift=None,
-                       cuda=None, model=DEFAULT_MODEL):
+                       cuda=None, model=DEFAULT_MODEL,
+                       keep_identity=True, negative_prompt=None):
     """Monta o comando do generate.py de forma autocontida (usado pelo app web).
 
     Retorna (cmd, ckpt_dir). Roda como UM único processo (chama generate.py
     direto), evitando a camada intermediária do main() — mais robusto sob OOM.
+
+    keep_identity: reforça (no prompt + no negativo) a preservação da pessoa.
+    negative_prompt: termos extras a evitar (somados ao padrão do modelo).
     """
     if cuda is None:
         cuda = has_cuda()
     spec = MODELS[model]
     ckpt_dir = resolve_ckpt_dir(spec, None)
+    pos = build_positive_prompt(prompt, keep_identity=keep_identity)
+    neg = build_negative_prompt(negative_prompt, keep_identity=keep_identity)
     cmd = [
         sys.executable, str(GENERATE),
         "--task", spec.task,
         "--size", size,
         "--ckpt_dir", str(ckpt_dir),
         "--image", str(Path(image).resolve()),
-        "--prompt", prompt,
+        "--prompt", pos,
+        "--negative_prompt", neg,
         "--save_file", str(output),
         "--frame_num", str(frame_num),
         "--sample_steps", str(steps),
@@ -168,13 +220,18 @@ def generation_command(*, image, prompt, size, frame_num, steps, output,
 def build_generate_cmd(args, spec: ModelSpec, ckpt_dir: Path, output: Path,
                        cuda: bool, frame_num: int) -> list[str]:
     """Monta a linha de comando para o generate.py oficial."""
+    keep_identity = not getattr(args, "no_keep_identity", False)
+    pos = build_positive_prompt(args.prompt, keep_identity=keep_identity)
+    neg = build_negative_prompt(getattr(args, "negative_prompt", None),
+                                keep_identity=keep_identity)
     cmd = [
         sys.executable, str(GENERATE),
         "--task", spec.task,
         "--size", args.size or spec.default_size,
         "--ckpt_dir", str(ckpt_dir),
         "--image", str(Path(args.image).resolve()),
-        "--prompt", args.prompt,
+        "--prompt", pos,
+        "--negative_prompt", neg,
         "--save_file", str(output),
         "--frame_num", str(frame_num),
     ]
@@ -211,6 +268,10 @@ def main() -> int:
     )
     p.add_argument("-i", "--image", help="Caminho da foto de entrada.")
     p.add_argument("-p", "--prompt", help="Descrição do movimento/cena desejada.")
+    p.add_argument("-n", "--negative-prompt", dest="negative_prompt", default=None,
+                   help="Termos extras a EVITAR (somados ao negativo padrão do modelo).")
+    p.add_argument("--no-keep-identity", action="store_true",
+                   help="Desliga o reforço de preservação da pessoa (rosto/identidade).")
     p.add_argument("-o", "--output", help="Arquivo de vídeo de saída (.mp4).")
     p.add_argument("--model", choices=list(MODELS), default=DEFAULT_MODEL,
                    help=f"Modelo Wan2.2 (default: {DEFAULT_MODEL}).")

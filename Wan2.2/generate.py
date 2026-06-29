@@ -216,6 +216,13 @@ def _parse_args():
         type=float,
         default=None,
         help="Classifier free guidance scale.")
+    # PATCH (photo2video): permite passar um prompt negativo customizado. Se
+    # vazio/None, o pipeline usa o cfg.sample_neg_prompt padrão do modelo.
+    parser.add_argument(
+        "--negative_prompt",
+        type=str,
+        default=None,
+        help="Prompt negativo (o que evitar). Vazio = usa o padrão do modelo.")
     parser.add_argument(
         "--convert_model_dtype",
         action="store_true",
@@ -450,6 +457,7 @@ def generate(args):
             sample_solver=args.sample_solver,
             sampling_steps=args.sample_steps,
             guide_scale=args.sample_guide_scale,
+            n_prompt=args.negative_prompt or "",  # PATCH (photo2video): neg prompt custom
             seed=args.base_seed,
             offload_model=args.offload_model)
     elif "animate" in args.task:
@@ -536,6 +544,7 @@ def generate(args):
             sample_solver=args.sample_solver,
             sampling_steps=args.sample_steps,
             guide_scale=args.sample_guide_scale,
+            n_prompt=args.negative_prompt or "",  # PATCH (photo2video): neg prompt custom
             seed=args.base_seed,
             offload_model=args.offload_model)
 
