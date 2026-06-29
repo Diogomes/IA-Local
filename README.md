@@ -263,8 +263,10 @@ recriar corpo inteiro  →  trocar roupa  →  trocar fundo  →  melhorar quali
 Preencha **só o que quiser mudar** (campos vazios são pulados); o resultado de
 cada etapa vira a entrada da próxima. A melhoria de qualidade roda **uma vez no
 fim** e a checagem de identidade compara o resultado final com a foto original.
-A **galeria** mostra cada etapa, e dá para mandar o resultado direto para a aba
-de vídeo com **"🎬 Animar este resultado"**.
+A **galeria** mostra cada etapa, e dá para mandar o resultado para a aba de vídeo
+com **"🎬 Animar este resultado"**. Marcando **"🎬 Animar no fim"** (+ prompt do
+vídeo), o Estúdio faz **tudo num clique só**: transforma a foto **e já gera um
+vídeo 540p ~5s** do resultado final, sem trocar de aba.
 
 CLI equivalente:
 ```powershell
