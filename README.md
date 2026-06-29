@@ -35,6 +35,7 @@ IA_Local/
 ├── photo2photo.py        # edição de foto (roupa/fundo/corpo) mantendo a pessoa
 ├── enhance.py            # qualidade: upscale (Real-ESRGAN) + restaurar rosto (GFPGAN)
 ├── identity.py           # fidelidade: similaridade facial (InsightFace)
+├── history.py            # histórico persistente (lê a pasta outputs/)
 ├── requirements_cpu.txt  # deps para dev/teste em CPU (sem flash_attn)
 ├── README.md             # este arquivo
 ├── outputs/              # vídeos gerados pela UI
@@ -280,6 +281,14 @@ A aba **"🗂️ Lote"** aplica a **mesma tarefa** (trocar roupa, trocar fundo o
 livre) a **vários textos de uma vez** — um por linha — na mesma foto. Mesma
 pessoa e mesma seed em todos (só o texto muda), então dá para **comparar looks
 ou cenários** lado a lado numa galeria. Ex.: cole 4 roupas, receba 4 imagens.
+
+## Histórico (entre sessões)
+
+A aba **"🕘 Histórico"** lista tudo que você já gerou — fotos e vídeos salvos em
+`outputs/` — da mais recente para a mais antiga, **mesmo de sessões anteriores**
+(é só leitura da pasta, sem banco de dados). Clique numa imagem para selecioná-la
+e então **"Editar a selecionada"** ou **"Animar a selecionada"** (vai direto para
+a aba certa já com a imagem carregada). Os vídeos ficam numa lista para pré-visualizar.
 
 ## Qualidade máxima e fidelidade medida (opcional)
 

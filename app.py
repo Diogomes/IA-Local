@@ -29,6 +29,7 @@ import gradio as gr
 
 from photo2video import FPS_DEFAULT, WAN_REPO, generation_command, has_cuda
 import photo2photo as p2p
+import history
 
 ROOT = Path(__file__).resolve().parent
 OUTPUTS = ROOT / "outputs"
@@ -761,6 +762,46 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
                                    lo_melhorar, lo_escala, lo_checkid],
                            outputs=[lo_gallery, lo_status], api_name="lote")
 
+        # ---------------- Aba 5: Histórico ----------------
+        with gr.Tab("🕘 Histórico", id="historico"):
+            gr.Markdown(
+                "> 🕘 Tudo que você gerou (entre sessões) está aqui — salvo em "
+                "`outputs/`. Clique numa imagem para selecioná-la e então "
+                "**Editar** ou **Animar**. Os vídeos ficam na lista ao lado.",
+                elem_classes=["notice"])
+            with gr.Row():
+                with gr.Column(scale=2, elem_classes=["work-panel"]):
+                    hi_gallery = gr.Gallery(value=history.images(), label="Imagens",
+                                            columns=5, height=420)
+                    hi_selected = gr.Textbox(visible=False)
+                    with gr.Row():
+                        hi_refresh = gr.Button("🔄 Atualizar")
+                        hi_to_edit = gr.Button("🖼️ Editar a selecionada")
+                        hi_to_video = gr.Button("🎬 Animar a selecionada")
+                    hi_status = gr.Textbox(label="Status", interactive=False, lines=2)
+                with gr.Column(scale=1, elem_classes=["work-panel"]):
+                    hi_videos = gr.Dropdown(choices=history.videos(), label="Vídeos gerados")
+                    hi_player = gr.Video(label="Pré-visualizar vídeo", height=300)
+
+            def _hi_select(evt: gr.SelectData):
+                try:
+                    v = evt.value
+                    path = v.get("image", {}).get("path") if isinstance(v, dict) else v
+                    return path or "", f"Selecionada: {Path(path).name}" if path else ""
+                except Exception:
+                    return "", ""
+
+            def _hi_refresh():
+                return (gr.update(value=history.images()),
+                        gr.update(choices=history.videos()),
+                        "🔄 Atualizado.")
+
+            hi_gallery.select(_hi_select, inputs=None, outputs=[hi_selected, hi_status],
+                              api_name=False)
+            hi_refresh.click(_hi_refresh, outputs=[hi_gallery, hi_videos, hi_status],
+                             api_name=False)
+            hi_videos.change(lambda p: p, inputs=hi_videos, outputs=hi_player, api_name=False)
+
     # --- Fluxo entre abas: editar -> animar / encadear edições ---
     def _enviar_para_video(edited_path):
         if not edited_path:
@@ -780,6 +821,24 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
                    outputs=[ed_imagem, ed_status], api_name=False)
     st_to_video.click(_enviar_para_video, inputs=st_saida,
                       outputs=[imagem, tabs, status], api_name=False)
+
+    # Histórico -> mandar a imagem selecionada para Editar / Vídeo.
+    def _hist_para_editar(sel):
+        if not sel:
+            return gr.update(), gr.Tabs(), "⚠️ Selecione uma imagem no histórico."
+        return (gr.update(value=sel), gr.Tabs(selected="editar"),
+                "✅ Carregada na aba Editar foto.")
+
+    def _hist_para_video(sel):
+        if not sel:
+            return gr.update(), gr.Tabs(), "⚠️ Selecione uma imagem no histórico."
+        return (gr.update(value=sel), gr.Tabs(selected="video"),
+                "✅ Carregada na aba de vídeo — escreva o prompt e gere.")
+
+    hi_to_edit.click(_hist_para_editar, inputs=hi_selected,
+                     outputs=[ed_imagem, tabs, hi_status], api_name=False)
+    hi_to_video.click(_hist_para_video, inputs=hi_selected,
+                      outputs=[imagem, tabs, hi_status], api_name=False)
 
 
 if __name__ == "__main__":
