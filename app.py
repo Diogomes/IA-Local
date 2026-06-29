@@ -82,7 +82,8 @@ def aplicar_preset(preset: str):
 
 
 def gerar(imagem_path, prompt, resolucao_label, passos, duracao, guidance,
-          manter_pessoa, negativo_extra, progress=gr.Progress()):
+          manter_pessoa, negativo_extra, melhorar_video, escala_video,
+          progress=gr.Progress()):
     if not imagem_path:
         yield None, "⚠️ Envie uma foto primeiro."
         return
@@ -137,6 +138,21 @@ def gerar(imagem_path, prompt, resolucao_label, passos, duracao, guidance,
 
     proc.wait()
     if saida.exists() and saida.stat().st_size > 0:
+        if melhorar_video:
+            yield str(saida), ("✅ Vídeo gerado. ✨ Melhorando qualidade "
+                               f"(restaurar rosto + upscale {int(escala_video)}×)…")
+            try:
+                import enhance
+                hq = enhance.enhance_video(str(saida), scale=int(escala_video),
+                                           face_restore=True, device="cuda",
+                                           progress=progress)
+                yield str(hq), (f"✅ Pronto (HQ {int(escala_video)}×)! "
+                                f"~{frames/FPS_DEFAULT:.1f}s, salvo em {hq.name}.")
+                return
+            except Exception as e:  # noqa: BLE001
+                yield str(saida), (f"✅ Vídeo pronto, mas a melhoria falhou ({e}). "
+                                   "Instale requirements_enhance.txt no PC da GPU.")
+                return
         yield str(saida), f"✅ Pronto! Vídeo de ~{frames/FPS_DEFAULT:.1f}s ({size})."
     elif ultima_erro:
         yield None, ("❌ Falta de memória de GPU (OOM). Tente: resolução menor "
@@ -159,7 +175,7 @@ EDIT_MODEL_LABELS = {
 
 def editar(imagem_path, ref_path, task_label, descricao, manter_pessoa,
            modelo_label, passos, guidance, seed, negativo, lowvram,
-           progress=gr.Progress()):
+           melhorar, escala, checar_id, outpaint, progress=gr.Progress()):
     if not imagem_path:
         yield None, "⚠️ Envie uma foto primeiro."
         return
@@ -173,21 +189,35 @@ def editar(imagem_path, ref_path, task_label, descricao, manter_pessoa,
     model = EDIT_MODEL_LABELS.get(modelo_label, p2p.DEFAULT_MODEL)
     instruction = p2p.build_instruction(task, descricao, keep_identity=bool(manter_pessoa))
     ref = ref_path if (task == "tryon" or ref_path) else None
+    usar_outpaint = bool(outpaint) and task == "corpo"
+    quality = dict(upscale=int(escala) if melhorar else 1,
+                   face_restore=bool(melhorar), identity_check=bool(checar_id))
 
-    yield None, (f"⏳ Carregando o modelo {model} (a 1ª vez baixa vários GB e "
-                 "demora). Edição em 4-bit p/ caber em 16GB…\n"
-                 f"Instrução: {instruction}")
+    yield None, (f"⏳ Carregando o modelo (a 1ª vez baixa vários GB e demora). "
+                 "Edição em 4-bit p/ caber em 16GB…\n"
+                 + ("🧍 Outpaint com máscara (FLUX Fill).\n" if usar_outpaint else "")
+                 + f"Instrução: {instruction}")
     try:
-        out = p2p.edit_photo(
-            image=imagem_path, instruction=instruction, model=model, reference=ref,
-            steps=int(passos) or None, guidance=float(guidance), seed=int(seed),
-            negative=(negativo or "").strip() or None, device="cuda",
-            quantize="4bit", lowvram=bool(lowvram), progress=progress)
+        if usar_outpaint:
+            res = p2p.outpaint_full_body(
+                image=imagem_path, describe=descricao, seed=int(seed),
+                steps=int(passos) or None, device="cuda", quantize="4bit",
+                lowvram=bool(lowvram), progress=progress, **quality)
+        else:
+            res = p2p.edit_photo(
+                image=imagem_path, instruction=instruction, model=model, reference=ref,
+                steps=int(passos) or None, guidance=float(guidance), seed=int(seed),
+                negative=(negativo or "").strip() or None, device="cuda",
+                quantize="4bit", lowvram=bool(lowvram), progress=progress, **quality)
     except Exception as e:
         yield None, (f"❌ Falhou: {e}\nDicas: marque 'Low-VRAM' se for OOM; para "
-                     "FLUX Kontext aceite a licença no HF e rode `hf auth login`.")
+                     "FLUX Fill/Kontext aceite a licença no HF e rode `hf auth login`.")
         return
-    yield str(out), f"✅ Pronto! Imagem salva em {out.name}."
+
+    extra = ("\n" + "\n".join(res.notes)) if res.notes else ""
+    aviso = ("\n⚠️ A identidade pode ter mudado — tente outra seed."
+             if (res.identity_similarity is not None and not res.identity_ok) else "")
+    yield str(res.path), f"✅ Pronto! Salvo em {res.path.name}.{extra}{aviso}"
 
 
 _GPU_TXT = ("**Dispositivo: GPU (CUDA) ✅** — pode usar 540p/720p e 40-50 passos."
@@ -398,6 +428,11 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
                         negativo_extra = gr.Textbox(
                             label="Prompt negativo extra (o que evitar — opcional)", lines=2,
                             placeholder="ex.: fundo cheio de gente, texto na tela, cores saturadas")
+                        melhorar_video = gr.Checkbox(
+                            value=False,
+                            label="✨ Melhorar qualidade do vídeo (restaurar rosto + upscale) — mais lento")
+                        escala_video = gr.Radio(choices=[1, 2, 4], value=2,
+                                                label="Upscale (×) do vídeo")
 
                     botao = gr.Button("🎬 Gerar vídeo", variant="primary")
 
@@ -409,7 +444,7 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
                           outputs=[resolucao, passos, duracao, guidance], api_name=False)
             botao.click(gerar,
                         inputs=[imagem, prompt, resolucao, passos, duracao, guidance,
-                                manter_pessoa, negativo_extra],
+                                manter_pessoa, negativo_extra, melhorar_video, escala_video],
                         outputs=[video, status], api_name="gerar")
 
         # ---------------- Aba 2: Editar foto ----------------
@@ -444,6 +479,14 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
                         ed_neg = gr.Textbox(label="Evitar (negativo extra — opcional)", lines=2)
                         ed_lowvram = gr.Checkbox(value=False,
                                                  label="Low-VRAM (mais lento; use se der OOM)")
+                        ed_melhorar = gr.Checkbox(value=True,
+                                                  label="✨ Melhorar qualidade (restaurar rosto + upscale)")
+                        ed_escala = gr.Radio(choices=[1, 2, 4], value=2,
+                                             label="Upscale (×) quando melhorar")
+                        ed_checkid = gr.Checkbox(value=True,
+                                                 label="🔎 Checar identidade (retenta se a pessoa mudar)")
+                        ed_outpaint = gr.Checkbox(value=False,
+                                                  label="🧍 Corpo: outpaint com máscara (FLUX Fill, mais consistente)")
 
                     ed_botao = gr.Button("🖼️ Editar foto", variant="primary")
 
@@ -462,7 +505,8 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
             ed_task.change(_toggle_ref, inputs=ed_task, outputs=[ed_ref, ed_desc], api_name=False)
             ed_botao.click(editar,
                            inputs=[ed_imagem, ed_ref, ed_task, ed_desc, ed_keep,
-                                   ed_model, ed_steps, ed_guidance, ed_seed, ed_neg, ed_lowvram],
+                                   ed_model, ed_steps, ed_guidance, ed_seed, ed_neg, ed_lowvram,
+                                   ed_melhorar, ed_escala, ed_checkid, ed_outpaint],
                            outputs=[ed_saida, ed_status], api_name="editar")
 
     # --- Fluxo entre abas: editar -> animar / encadear edições ---

@@ -73,6 +73,17 @@ MODELS: dict[str, EditModel] = {
         supports_reference=False,
         note="Não-comercial, GATED no HF (aceite a licença + hf auth login). ~12B.",
     ),
+    # Usado para OUTPAINT com máscara (recriar corpo inteiro a partir do rosto).
+    "flux-fill": EditModel(
+        key="flux-fill",
+        hf_repo="black-forest-labs/FLUX.1-Fill-dev",
+        pipeline="FluxFillPipeline",
+        uses_true_cfg=False,
+        default_steps=28,
+        default_guidance=30.0,   # Fill é guidance-distilled (valores altos ~30).
+        supports_reference=False,
+        note="Outpaint/inpaint com máscara. GATED no HF (aceite a licença). ~12B.",
+    ),
 }
 
 DEFAULT_MODEL = "qwen-edit"
@@ -281,20 +292,86 @@ def _load_image(path: str):
     return img
 
 
+@dataclass
+class EditResult:
+    path: Path
+    identity_similarity: float | None = None
+    identity_ok: bool = True
+    attempts: int = 1
+    notes: list = field(default_factory=list)
+
+
+def _step_callback(progress, steps):
+    if progress is None:
+        return None
+    def _cb(pipe_, step, t, kw):
+        try:
+            progress(step / max(1, int(steps)), desc="Editando")
+        except Exception:
+            pass
+        return kw
+    return _cb
+
+
+def _generate_edit(pipe, spec, images_in, instruction, neg, steps, guidance,
+                   seed, progress):
+    """Uma passada de geração; devolve a imagem PIL."""
+    import torch
+    gen = torch.Generator(device="cpu").manual_seed(int(seed))
+    call = dict(image=images_in, prompt=instruction, num_inference_steps=int(steps),
+                generator=gen)
+    if spec.uses_true_cfg:
+        call["true_cfg_scale"] = float(guidance)
+        call["negative_prompt"] = neg
+    else:
+        call["guidance_scale"] = float(guidance)
+        call["true_cfg_scale"] = 1.0
+    cb = _step_callback(progress, steps)
+    if cb is not None:
+        call["callback_on_step_end"] = cb
+    return pipe(**call).images[0]
+
+
+def _finalize(pil, *, src_image, output, upscale, face_restore, device, notes):
+    """Aplica melhoria de qualidade (opcional) e salva; devolve o Path."""
+    if face_restore or (upscale and upscale > 1):
+        try:
+            import enhance
+            dev = "cuda" if (device in (None, "cuda")) else device
+            if face_restore:
+                pil = enhance.restore_faces_pil(pil, device=dev)
+            if upscale and upscale > 1:
+                pil = enhance.upscale_pil(pil, scale=int(upscale), device=dev)
+            notes.append(f"qualidade: rosto={'on' if face_restore else 'off'}, "
+                         f"upscale={upscale}x")
+        except Exception as e:  # noqa: BLE001
+            notes.append(f"melhoria de qualidade pulada ({e})")
+    OUTPUTS.mkdir(exist_ok=True)
+    out = Path(output).resolve() if output else (OUTPUTS / f"edit_{uuid.uuid4().hex[:8]}.png")
+    pil.save(out)
+    return out
+
+
 def edit_photo(*, image: str, instruction: str, model: str = DEFAULT_MODEL,
                reference: str | None = None, steps: int | None = None,
                guidance: float | None = None, seed: int = 42,
                negative: str | None = None, output: str | None = None,
                device: str | None = None, quantize: str | None = None,
-               lowvram: bool = False, progress=None) -> Path:
-    """Edita a foto e devolve o caminho do PNG gerado."""
-    import torch
+               lowvram: bool = False, progress=None,
+               upscale: int = 1, face_restore: bool = False,
+               identity_check: bool = False,
+               identity_threshold: float = 0.45,
+               max_retries: int = 1) -> EditResult:
+    """Edita a foto preservando a pessoa. Devolve um EditResult.
 
+    Se identity_check estiver ligado, mede a similaridade facial entrada×saída e,
+    se ficar abaixo do limiar, tenta de novo com outra seed (até max_retries),
+    guardando o melhor resultado. upscale/face_restore melhoram a qualidade final.
+    """
     spec = MODELS[model]
     steps = steps or spec.default_steps
     guidance = spec.default_guidance if guidance is None else guidance
-    neg = (negative or "").strip()
-    neg = (EDIT_NEGATIVE + (", " + neg if neg else ""))
+    neg = EDIT_NEGATIVE + (", " + negative.strip() if (negative or "").strip() else "")
 
     pipe = load_editor(model, device=device, quantize=quantize, lowvram=lowvram)
 
@@ -306,32 +383,121 @@ def edit_photo(*, image: str, instruction: str, model: str = DEFAULT_MODEL,
         log(f"AVISO: {model} não aceita imagem de referência; ignorando-a. "
             "Use --model qwen-edit para try-on com peça de referência.")
 
-    gen = torch.Generator(device="cpu").manual_seed(int(seed))
+    import identity as idmod
+    do_check = identity_check and idmod.available()
+    attempts = (max_retries + 1) if do_check else 1
 
-    call = dict(image=images_in, prompt=instruction, num_inference_steps=int(steps),
-                generator=gen)
-    if spec.uses_true_cfg:
-        call["true_cfg_scale"] = float(guidance)
-        call["negative_prompt"] = neg
-    else:
-        call["guidance_scale"] = float(guidance)
-        # Flux Kontext: negativo só atua com true_cfg_scale>1.
-        call["true_cfg_scale"] = 1.0
-    if progress is not None:
-        def _cb(pipe_, step, t, kw):
-            try:
-                progress(step / max(1, int(steps)), desc="Editando")
-            except Exception:
-                pass
-            return kw
-        call["callback_on_step_end"] = _cb
-
-    out_img = pipe(**call).images[0]
-
+    best = None  # (sim_or_-1, pil, sim, ok, attempt_idx)
+    notes: list = []
     OUTPUTS.mkdir(exist_ok=True)
-    out = Path(output).resolve() if output else (OUTPUTS / f"edit_{uuid.uuid4().hex[:8]}.png")
-    out_img.save(out)
-    return out
+    for attempt in range(attempts):
+        s = int(seed) + attempt
+        pil = _generate_edit(pipe, spec, images_in, instruction, neg, steps,
+                             guidance, s, progress)
+        sim, ok = (None, True)
+        if do_check:
+            tmp = OUTPUTS / f".cand_{uuid.uuid4().hex[:6]}.png"
+            pil.save(tmp)
+            sim, ok = idmod.check(image, str(tmp), identity_threshold)
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            rank = sim if sim is not None else -1.0
+            if best is None or rank > best[0]:
+                best = (rank, pil, sim, ok, attempt + 1)
+            if sim is None or ok:
+                break
+            log(f"Identidade baixa ({sim:.3f} < {identity_threshold}); "
+                f"tentativa {attempt + 2}/{attempts}…")
+        else:
+            best = (-1.0, pil, None, True, attempt + 1)
+            break
+
+    _, pil, sim, ok, used = best
+    if do_check and sim is not None:
+        notes.append(f"identidade={sim:.3f} ({'ok' if ok else 'baixa'}), tentativas={used}")
+        if not ok:
+            notes.append("⚠️ a pessoa pode ter mudado — tente outra seed/guidance menor.")
+
+    out = _finalize(pil, src_image=image, output=output, upscale=upscale,
+                    face_restore=face_restore, device=device, notes=notes)
+    return EditResult(path=out, identity_similarity=sim, identity_ok=ok,
+                      attempts=used, notes=notes)
+
+
+def _build_outpaint_canvas(img, *, top_ratio: float = 0.34, side_ratio: float = 0.18):
+    """Cria a tela estendida + máscara p/ recriar o corpo a partir do rosto.
+
+    Posiciona a foto original no topo-centro de uma tela mais alta; a máscara é
+    BRANCA (área a gerar) em tudo, exceto sobre a foto original (preto = manter).
+    """
+    from PIL import Image
+    w, h = img.size
+    # múltiplos de 16 ajudam o FLUX; dimensiona a tela.
+    new_w = int(round(w * (1 + 2 * side_ratio) / 16) * 16)
+    new_h = int(round(h / top_ratio / 16) * 16)
+    ox = (new_w - w) // 2
+    oy = int(new_h * 0.04)  # pequena margem no topo
+    canvas = Image.new("RGB", (new_w, new_h), (127, 127, 127))
+    canvas.paste(img, (ox, oy))
+    mask = Image.new("L", (new_w, new_h), 255)        # tudo a gerar…
+    keep = Image.new("L", (w, h), 0)
+    mask.paste(keep, (ox, oy))                        # …menos a foto original
+    return canvas, mask
+
+
+def outpaint_full_body(*, image: str, describe: str = "", model: str = "flux-fill",
+                       steps: int | None = None, guidance: float | None = None,
+                       seed: int = 42, output: str | None = None,
+                       device: str | None = None, quantize: str | None = None,
+                       lowvram: bool = False, progress=None,
+                       upscale: int = 1, face_restore: bool = False,
+                       identity_check: bool = False,
+                       identity_threshold: float = 0.45) -> EditResult:
+    """Recria o corpo inteiro a partir de um retrato usando outpaint com máscara."""
+    import torch
+    spec = MODELS[model]
+    if spec.pipeline != "FluxFillPipeline":
+        raise ValueError("outpaint_full_body requer um modelo de fill (flux-fill).")
+    steps = steps or spec.default_steps
+    guidance = spec.default_guidance if guidance is None else guidance
+
+    pipe = load_editor(model, device=device, quantize=quantize, lowvram=lowvram)
+    img = _load_image(image)
+    canvas, mask = _build_outpaint_canvas(img)
+
+    prompt = (f"A full-body photo of the same person from head to toe, standing, "
+              f"realistic and consistent body and proportions. {describe.strip()}. "
+              + IDENTITY_LOCK)
+    gen = torch.Generator(device="cpu").manual_seed(int(seed))
+    call = dict(image=canvas, mask_image=mask, prompt=prompt,
+                height=canvas.height, width=canvas.width,
+                num_inference_steps=int(steps), guidance_scale=float(guidance),
+                generator=gen)
+    cb = _step_callback(progress, steps)
+    if cb is not None:
+        call["callback_on_step_end"] = cb
+    pil = pipe(**call).images[0]
+
+    notes: list = ["modo: outpaint com máscara (FLUX Fill)"]
+    sim, ok = (None, True)
+    import identity as idmod
+    if identity_check and idmod.available():
+        OUTPUTS.mkdir(exist_ok=True)
+        tmp = OUTPUTS / f".cand_{uuid.uuid4().hex[:6]}.png"
+        pil.save(tmp)
+        sim, ok = idmod.check(image, str(tmp), identity_threshold)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        if sim is not None:
+            notes.append(f"identidade={sim:.3f} ({'ok' if ok else 'baixa'})")
+
+    out = _finalize(pil, src_image=image, output=output, upscale=upscale,
+                    face_restore=face_restore, device=device, notes=notes)
+    return EditResult(path=out, identity_similarity=sim, identity_ok=ok, notes=notes)
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +545,23 @@ def main() -> int:
                    help="4bit (nf4) faz o modelo caber em 16GB (default).")
     p.add_argument("--lowvram", action="store_true",
                    help="Offload sequencial (menos VRAM, mais lento).")
+    # Qualidade (pós-processamento)
+    p.add_argument("--enhance", action="store_true",
+                   help="Melhorar a saída: restaurar rosto + upscale.")
+    p.add_argument("--scale", type=int, choices=[1, 2, 4], default=2,
+                   help="Fator de upscale quando --enhance (default 2).")
+    p.add_argument("--no-face-restore", action="store_true",
+                   help="Com --enhance, NÃO restaurar rosto (só upscale).")
+    # Fidelidade medida
+    p.add_argument("--check-identity", action="store_true",
+                   help="Medir similaridade facial e retentar se a pessoa mudar.")
+    p.add_argument("--identity-threshold", type=float, default=0.45,
+                   help="Limiar de similaridade (default 0.45).")
+    p.add_argument("--retries", type=int, default=2,
+                   help="Máx. de retentativas com --check-identity (default 2).")
+    # Corpo inteiro de verdade
+    p.add_argument("--outpaint", action="store_true",
+                   help="Tarefa 'corpo': usar outpaint com máscara (FLUX Fill).")
     p.add_argument("--download-only", action="store_true",
                    help="Só baixa os pesos do modelo escolhido e sai.")
     p.add_argument("--dry-run", action="store_true",
@@ -432,16 +615,28 @@ def main() -> int:
         err("sem CUDA — abortando (rode na máquina com GPU). Use --dry-run para validar.")
         return 1
 
+    face_restore = args.enhance and not args.no_face_restore
+    scale = args.scale if args.enhance else 1
+    common = dict(
+        image=args.image, model=args.model, steps=args.steps, guidance=args.guidance,
+        seed=args.seed, output=args.output, device=device, quantize=quantize,
+        lowvram=args.lowvram, upscale=scale, face_restore=face_restore,
+        identity_check=args.check_identity, identity_threshold=args.identity_threshold)
     try:
-        out = edit_photo(
-            image=args.image, instruction=instruction, model=args.model,
-            reference=args.reference, steps=args.steps, guidance=args.guidance,
-            seed=args.seed, negative=args.negative, output=args.output,
-            device=device, quantize=quantize, lowvram=args.lowvram)
+        if args.task == "corpo" and args.outpaint:
+            model_fill = args.model if MODELS[args.model].pipeline == "FluxFillPipeline" else "flux-fill"
+            common["model"] = model_fill
+            log(f"Outpaint com máscara usando {model_fill}.")
+            res = outpaint_full_body(describe=args.describe, **common)
+        else:
+            res = edit_photo(instruction=instruction, reference=args.reference,
+                             negative=args.negative, max_retries=args.retries, **common)
     except Exception as e:
         err(f"falha na edição: {e}")
         return 1
-    log(f"✅ Pronto: {out}")
+    for n in res.notes:
+        log(n)
+    log(f"✅ Pronto: {res.path}")
     return 0
 
 
