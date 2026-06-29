@@ -109,6 +109,15 @@ if ($r2 -eq "s" -or $r2 -eq "S") {
     Write-Host "ou rode: venv_wan\Scripts\python photo2photo.py --model qwen-edit --download-only" -ForegroundColor Yellow
 }
 
+# --- 8) Recursos de qualidade/fidelidade (opcional) -------------------------
+$r3 = Read-Host "Instalar recursos de QUALIDADE (upscale + restaurar rosto + checar identidade)? [s/N]"
+if ($r3 -eq "s" -or $r3 -eq "S") {
+    Write-Host "Instalando requirements_enhance.txt ..." -ForegroundColor Cyan
+    & $vpy -m pip install -r (Join-Path $PSScriptRoot "requirements_enhance.txt")
+} else {
+    Write-Host "Pulei. Depois: venv_wan\Scripts\python -m pip install -r requirements_enhance.txt" -ForegroundColor Yellow
+}
+
 Write-Host ""
 Write-Host "=== Setup concluído ===" -ForegroundColor Green
 Write-Host "Abrir a interface web:  .\run_ui_windows.bat" -ForegroundColor Green
