@@ -119,7 +119,12 @@ if ($r3 -eq "s" -or $r3 -eq "S") {
 }
 
 Write-Host ""
+Write-Host "Verificando o ambiente (doctor) ..." -ForegroundColor Cyan
+& $vpy (Join-Path $PSScriptRoot "doctor.py")
+
+Write-Host ""
 Write-Host "=== Setup concluído ===" -ForegroundColor Green
+Write-Host "Diagnóstico a qualquer momento:  .\run_doctor_windows.bat" -ForegroundColor Green
 Write-Host "Abrir a interface web:  .\run_ui_windows.bat" -ForegroundColor Green
 Write-Host "Ou pela CLI:            venv_wan\Scripts\python app.py" -ForegroundColor Green
 Write-Host "Edição por linha de comando: venv_wan\Scripts\python photo2photo.py --help" -ForegroundColor Green

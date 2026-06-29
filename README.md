@@ -36,6 +36,7 @@ IA_Local/
 ├── enhance.py            # qualidade: upscale (Real-ESRGAN) + restaurar rosto (GFPGAN)
 ├── identity.py           # fidelidade: similaridade facial (InsightFace)
 ├── history.py            # histórico persistente (lê a pasta outputs/)
+├── doctor.py             # diagnóstico do ambiente (CUDA/modelos/libs) + smoke test
 ├── requirements_cpu.txt  # deps para dev/teste em CPU (sem flash_attn)
 ├── README.md             # este arquivo
 ├── outputs/              # vídeos gerados pela UI
@@ -191,6 +192,16 @@ Esse é o caminho para gerar vídeos **de verdade**, em alta qualidade.
 ```powershell
 venv_wan\Scripts\python photo2video.py -i foto.jpg -p "a pessoa vira a cabeça e sorri" -o saida.mp4
 ```
+
+### Diagnóstico (doctor)
+
+Antes de gerar, confira o ambiente — ele diz, em PT, o que está OK e o que falta
+(PyTorch/CUDA Blackwell, modelos, libs opcionais):
+```
+run_doctor_windows.bat            (ou: venv_wan\Scripts\python doctor.py)
+run_doctor_windows.bat --smoke    (faz uma geração de vídeo MÍNIMA de teste)
+```
+O `setup_gpu_windows.ps1` já roda o doctor automaticamente no fim.
 
 ### Dicas de VRAM (16GB)
 
