@@ -25,6 +25,12 @@ import uuid
 import os
 from pathlib import Path
 
+# VRAM: segmentos expansíveis reduzem a fragmentação da memória em GPUs de pouca
+# VRAM (16GB, ex.: RTX 5070 Ti). Precisa ser definido ANTES de o torch ser
+# importado — o que acontece nos imports do projeto logo abaixo — por isso fica
+# aqui no topo. setdefault respeita um valor já exportado pelo usuário/launcher.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import gradio as gr
 
 from photo2video import FPS_DEFAULT, WAN_REPO, generation_command, has_cuda
