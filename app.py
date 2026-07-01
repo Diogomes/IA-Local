@@ -45,6 +45,20 @@ LOGO_PATH = ASSETS / "gigaverse3d-logo.png"
 
 CUDA = has_cuda()
 
+
+def _gpu_label() -> str:
+    """Rótulo do dispositivo p/ a UI: nome real da GPU quando houver CUDA."""
+    if not CUDA:
+        return "CPU (lento)"
+    try:
+        import torch
+        return f"GPU: {torch.cuda.get_device_name(0)}"
+    except Exception:
+        return "GPU (CUDA)"
+
+
+GPU_LABEL = _gpu_label()
+
 # Rótulo amigável -> valor de --size.
 #  - 720p/540p/480p = qualidade real (GPU).
 #  - 256/384/512    = só teste do pipeline (CPU).
@@ -364,7 +378,7 @@ def lote(imagem_path, task_label, itens_texto, keep, modelo_label, passos, guida
     yield galeria, f"✅ {len(galeria)} resultados. Clique para ampliar; salvos em outputs/."
 
 
-_GPU_TXT = ("**Dispositivo: GPU (CUDA) ✅** — pode usar 540p/720p e 40-50 passos."
+_GPU_TXT = (f"**Dispositivo: {GPU_LABEL} ✅** — pode usar 540p/720p e 40-50 passos."
             if CUDA else
             "**Dispositivo: CPU (lento) ⚠️** — use os presets de *teste*. "
             "Qualidade real (540p/720p) só numa GPU NVIDIA.")
@@ -542,7 +556,7 @@ with gr.Blocks(title="Gigaverse3d photo to video", elem_id="gigaverse-shell") as
                 "<h1>Gigaverse3d</h1>"
                 "<div class='tagline'>Impressao 3D • Tecnologia • Universo</div>"
                 "<p>Photo to video com preservacao visual da imagem de entrada. "
-                f"Dispositivo detectado: <strong>{'GPU (CUDA)' if CUDA else 'CPU (lento)'}</strong></p>"
+                f"Dispositivo detectado: <strong>{GPU_LABEL}</strong></p>"
                 "</div>"
             )
     with gr.Tabs() as tabs:
