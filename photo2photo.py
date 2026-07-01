@@ -333,6 +333,20 @@ def _generate_edit(pipe, spec, images_in, instruction, neg, steps, guidance,
     return pipe(**call).images[0]
 
 
+def free_vram() -> None:
+    """Libera a VRAM não usada (cache de alocação) entre gerações.
+
+    No-op sem CUDA, então é seguro chamar em qualquer máquina. Ajuda a evitar OOM
+    ao encadear gerações ou trocar de modelo/aba na GPU de 16GB.
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def _finalize(pil, *, src_image, output, upscale, face_restore, device, notes):
     """Aplica melhoria de qualidade (opcional) e salva; devolve o Path."""
     if face_restore or (upscale and upscale > 1):
@@ -350,6 +364,7 @@ def _finalize(pil, *, src_image, output, upscale, face_restore, device, notes):
     OUTPUTS.mkdir(exist_ok=True)
     out = Path(output).resolve() if output else (OUTPUTS / f"edit_{uuid.uuid4().hex[:8]}.png")
     pil.save(out)
+    free_vram()  # devolve a VRAM entre gerações (no-op sem CUDA)
     return out
 
 
